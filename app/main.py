@@ -6,7 +6,7 @@ from app.routers import chat, knowledge, company  # 라우터 임포트
 app = FastAPI(
     title="AI ChatBot SaaS API",
     description="상용 운영이 가능한 AI ChatBot SaaS 파이썬 서버 문서입니다.",
-    version="1.0.0",
+    version="1.1.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )

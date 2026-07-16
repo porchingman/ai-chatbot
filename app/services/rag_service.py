@@ -1,25 +1,74 @@
-# app/services/rag_service.py
 import io
 import httpx
+import os
 from pypdf import PdfReader
+from docx import Document
+import openpyxl
+import olefile
 from fastapi import HTTPException
 from google import genai
-from google.genai import types # 구글 임베딩 차원 고정 설정을 위한 타입 추가
+from google.genai import types
 
 from app.config import settings
 from app.database import get_supabase
-from app.ai import get_ai_client, EMBEDDING_MODEL # get_ai_client로 통합 롤백
+from app.ai import get_ai_client, EMBEDDING_MODEL
 
-# 통합 안정화 채널 클라이언트 로드
 ai_client = get_ai_client()
 
 class RAGService:
     @staticmethod
-    async def download_and_extract_text(url: str) -> list[dict]:
+    def extract_text_from_docx(file_stream) -> list[dict]:
+        """Word(.docx) 파일에서 텍스트를 페이지 개념 대신 일정 문단 단위로 추출"""
+        doc = Document(file_stream)
+        text_list = []
+        current_text = []
+        
+        for para in doc.paragraphs:
+            if para.text.strip():
+                current_text.append(para.text.strip())
+            # 500글자 정도 모이면 가상의 페이지(단락 블록)로 분할
+            if len("\n".join(current_text)) > 500:
+                text_list.append("\n".join(current_text))
+                current_text = []
+                
+        if current_text:
+            text_list.append("\n".join(current_text))
+            
+        return [{"page_no": i, "text": text} for i, text in enumerate(text_list, start=1)]
+
+    @staticmethod
+    def extract_text_from_xlsx(file_stream) -> list[dict]:
+        """Excel(.xlsx) 파일에서 행 데이터를 텍스트로 보존하며 시트 단위 추출"""
+        wb = openpyxl.load_workbook(file_stream, data_only=True)
+        pages_content = []
+        
+        for sheet_idx, sheet_name in enumerate(wb.sheetnames, start=1):
+            sheet = wb[sheet_name]
+            sheet_text = [f"--- 시트명: {sheet_name} ---"]
+            
+            for row in sheet.iter_rows(values_only=True):
+                # 공백 셀 제외하고 한 줄의 텍스트 라인 조립
+                row_text = ", ".join([str(cell).strip() for cell in row if cell is not None])
+                if row_text.strip():
+                    sheet_text.append(row_text)
+                    
+            if len(sheet_text) > 1:
+                pages_content.append({
+                    "page_no": sheet_idx,
+                    "text": "\n".join(sheet_text)
+                })
+        return pages_content
+
+    @classmethod
+    async def download_and_extract_text(cls, url: str) -> list[dict]:
         """
-        URL에서 파일을 다운로드하여 페이지별로 텍스트를 추출합니다.
+        [업그레이드] URL 주소의 확장자를 판별하여 동적으로 적절한 파서 엔진을 가동합니다.
         """
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # URL에서 쿼리스트링 제외한 순수 파일명 기반 확장자 획득
+        pure_path = url.split("?")[0].lower()
+        _, ext = os.path.splitext(pure_path)
+
+        async with httpx.AsyncClient(timeout=45.0) as client:
             try:
                 response = await client.get(url)
                 response.raise_for_status()
@@ -27,45 +76,49 @@ class RAGService:
                 raise HTTPException(status_code=400, detail=f"파일 다운로드 실패: {str(e)}")
 
         file_stream = io.BytesIO(response.content)
-        pages_content = []
 
         try:
-            reader = PdfReader(file_stream)
-            for page_num, page in enumerate(reader.pages, start=1):
-                text = page.extract_text()
-                if text and text.strip():
-                    pages_content.append({"page_no": page_num, "text": text.strip()})
+            if ext == ".pdf":
+                reader = PdfReader(file_stream)
+                pages_content = []
+                for page_num, page in enumerate(reader.pages, start=1):
+                    text = page.extract_text()
+                    if text and text.strip():
+                        pages_content.append({"page_no": page_num, "text": text.strip()})
+                return pages_content
+                
+            elif ext == ".docx":
+                return cls.extract_text_from_docx(file_stream)
+                
+            elif ext == ".xlsx":
+                return cls.extract_text_from_xlsx(file_stream)                
+                
+            else:
+                raise HTTPException(status_code=415, detail=f"지원하지 않는 확장자({ext})입니다. (PDF, DOCX, XLSX, HWP만 가능)")
+                
         except Exception as e:
-            raise HTTPException(status_code=422, detail=f"문서 파싱 실패: {str(e)}")
-
-        if not pages_content:
-            raise HTTPException(status_code=400, detail="문서에서 추출할 수 있는 텍스트가 없습니다.")
-            
-        return pages_content
+            raise HTTPException(status_code=422, detail=f"문서 구조 파싱 실패: {str(e)}")
 
     @classmethod
     async def process_and_save_document(cls, req) -> dict:
-        """
-        문서를 마스터(knowledge)와 청크(knowledge_data)로 분리하여 저장하는 파이프라인
-        """
+        """문서를 마스터(knowledge)와 청크(knowledge_data)로 분리하여 저장하는 파이프라인"""
         supabase = get_supabase()
 
-        # 1. 고객사 조회
         company_res = supabase.table("company").select("code").eq("company_id", req.company_id).execute()
         if not company_res.data:
             raise HTTPException(status_code=404, detail="존재하지 않는 company_id 입니다.")
-        company_code = company_res.data[0]["code"] # 안전한 레코드 배열 인덱싱 보정
+        company_code = company_res.data[0]["code"] # 첫 번째 딕셔너리 안전 접근
 
-        # 2. 설계 원칙: 기존 동일 식별자 문서 선행 일괄 제거 (Cascade 하위 연동 삭제)
+        # 설계 원칙: 기존 데이터 선행 삭제 (CASCADE 하위 연동 소멸)
         supabase.table("knowledge").delete()\
             .eq("company_code", company_code)\
             .eq("source_type", req.source_type)\
             .eq("source_code", req.source_code).execute()
 
-        # 3. 파일 처리 및 텍스트 획득
+        # [확장판 작동] 파일 형식별 다운로드 및 자동 텍스트 추출 호출
         pages = await cls.download_and_extract_text(str(req.source_url))
 
-        # 4. 마스터 테이블 (knowledge) 정보 저장 (의견 주신대로 content 본문 비우기 최적화)
+        # 마스터 테이블 저장 (content 컬럼 비우기 완전 적용)
         master_data = {
             "company_code": company_code,
             "source_type": req.source_type,
@@ -77,9 +130,9 @@ class RAGService:
         master_insert = supabase.table("knowledge").insert(master_data).execute()
         if not master_insert.data:
             raise HTTPException(status_code=500, detail="마스터 문서 정보 생성 실패")
-        knowledge_code = master_insert.data[0]["code"]
+        knowledge_code = master_insert.data[0]["code"] # 인덱싱 보정
 
-        # 5. 텍스트 분할
+        # 청킹 스플리터 가동
         from langchain_text_splitters import RecursiveCharacterTextSplitter
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 
@@ -99,15 +152,14 @@ class RAGService:
                 })
                 chunk_no += 1
 
-        # 6. Gemini 최신 벌크 임베딩 수행 및 차원(768) 강제 제어 옵션 주입
+        # Gemini 임베딩 생성 (768차원 최신 제한 옵션 일치)
         try:
             texts_to_embed = [c["content"] for c in chunks_payload]
             embed_response = ai_client.models.embed_content(
                 model=EMBEDDING_MODEL,
                 contents=texts_to_embed,
-                config=types.EmbedContentConfig(output_dimensionality=768) # 768차원으로 정밀 압축 제어
+                config=types.EmbedContentConfig(output_dimensionality=768)
             )
-            
             for idx, embedding_data in enumerate(embed_response.embeddings):
                 chunks_payload[idx]["embedding"] = embedding_data.values
                 chunks_payload[idx]["embedding_model"] = EMBEDDING_MODEL
@@ -115,11 +167,9 @@ class RAGService:
             supabase.table("knowledge").delete().eq("code", knowledge_code).execute()
             raise HTTPException(status_code=500, detail=f"Gemini 임베딩 생성 오류: {str(e)}")
 
-        # 7. 하위 테이블 (knowledge_data) 최종 벌크 인서트
         if chunks_payload:
             supabase.table("knowledge_data").insert(chunks_payload).execute()
 
-        # 8. 마스터 토큰 수치 업데이트
         total_calculated_tokens = sum([c["token"] for c in chunks_payload])
         supabase.table("knowledge").update({"total_token": total_calculated_tokens}).eq("code", knowledge_code).execute()
 
