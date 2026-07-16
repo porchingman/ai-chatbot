@@ -23,28 +23,11 @@ app.add_middleware(
 app.include_router(chat.router)  # 채팅 관련 라우터도 등록 (추가 필요 시)
 app.include_router(knowledge.router)
 
-@app.get("/health", tags=["System"], summary="서버 헬스 체크")
-def health_check():
-    return {
-        "status": "healthy", 
-        "environment": settings.ENV,
-        "supabase_connected": bool(settings.SUPABASE_URL)
-    }
-
-
 @app.get("/")
 def root():
     return {
         "message": "This is AI ChatBot SaaS API Server.",
         "version": "1.0.0",
-    }
-
-@app.get("/config")
-def config():
-    return {
-        "gemini_key": settings.GEMINI_API_KEY,
-        "supabase_url": settings.SUPABASE_URL,
-        "supabase_key": settings.SUPABASE_KEY
     }
 
 @app.get("/health", tags=["System"], summary="서버 헬스 체크")
