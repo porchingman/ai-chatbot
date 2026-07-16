@@ -5,7 +5,7 @@ from app.models.schemas import CompanyCreateRequest, CompanyUpdateRequest
 class CompanyService:
     @staticmethod
     def create_company(req: CompanyCreateRequest) -> dict:
-        """고객사를 새로 등록합니다. status 값을 외부(POST)로부터 주입받아 처리합니다."""
+        """고객사를 새로 등록합니다. status 값을 외부(POST)로부터 주입받아서 처리합니다."""
         supabase = get_supabase()
         
         # 1. 중복 체크 (company_id)
