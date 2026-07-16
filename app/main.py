@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
-from app.routers import chat, knowledge  # 라우터 임포트
+from app.routers import chat, knowledge, company  # 라우터 임포트
 
 app = FastAPI(
     title="AI ChatBot SaaS API",
@@ -22,6 +22,7 @@ app.add_middleware(
 # 지식 관리 라우터 등록
 app.include_router(chat.router)  # 채팅 관련 라우터도 등록 (추가 필요 시)
 app.include_router(knowledge.router)
+app.include_router(company.router)  # 고객사 관리 라우터 등록
 
 @app.get("/")
 def root():

@@ -1,7 +1,47 @@
 from pydantic import BaseModel, HttpUrl
-from typing import Optional
+from typing import Optional, List
 
-# [3단계 관련] 문서 등록 요청/응답 스키마
+# 고객사 생성 요청
+class CompanyCreateRequest(BaseModel):
+    company_id: str          # 웹서버 master.company_id (고유 식별 문자열)
+    api_key: str             # 웹서버 인증용 API KEY
+    prompt: Optional[str] = "당신은 친절한 AI 어시스턴트입니다."
+    status: Optional[str] = "ready"  # 초기 상태는 'ready'로 설정 (active, ready, withdrawal)
+
+# 고객사 정보 수정 요청
+class CompanyUpdateRequest(BaseModel):
+    company_id: Optional[str] = None # 변경할 신규 식별자 (선택)
+    api_key: Optional[str] = None    # 변경할 신규 API KEY (선택)
+    prompt: Optional[str] = None     # 시스템 프롬프트 (선택)
+    status: Optional[str] = None     # active, ready, withdrawal (선택)
+
+# 고객사 정보 응답 표준
+class CompanyInfoResponse(BaseModel):
+    code: int
+    company_id: str
+    api_key: str
+    prompt: Optional[str]
+    status: str
+    total_input_token: int
+    total_output_token: int
+    total_token: int
+    total_question: int
+    reg_date: str
+
+class CompanyCommonResponse(BaseModel):
+    success: bool
+    message: str
+    code: int
+
+# 고객사 리스트 및 페이지네이션 응답 표준
+class CompanyListResponse(BaseModel):
+    success: bool
+    total_count: int
+    page: int
+    limit: int
+    data: List[CompanyInfoResponse]
+
+# 문서 등록 요청/응답 스키마
 class DocumentKnowledgeRequest(BaseModel):
     company_id: str          # 웹서버 master.company_id
     source_type: str         # FILE, URL, TEXT 등
@@ -16,7 +56,7 @@ class DocumentKnowledgeResponse(BaseModel):
     knowledge_code: int
     total_chunks: int
 
-# [4단계 관련] 챗봇 질의응답 요청/응답 스키마
+# 챗봇 질의응답 요청/응답 스키마
 class ChatRequest(BaseModel):
     company_id: str          # 웹서버 master.company_id (인증 및 고객사 식별)
     member_code: str         # 대화 주체 식별 (메모리 관리용)
