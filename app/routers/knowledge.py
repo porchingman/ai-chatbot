@@ -1,38 +1,38 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from app.models.schemas import DocumentKnowledgeRequest, DocumentKnowledgeResponse
 from app.services.rag_service import RAGService
+from app.dependencies import verify_api_key  # 보안 의존성 추가
 from app.database import get_supabase
 
 router = APIRouter(prefix="/v1/knowledge", tags=["Knowledge"])
 
-@router.post("/register", response_model=DocumentKnowledgeResponse, summary="문서 등록 (구조 분리 버전)")
-async def register_document(payload: DocumentKnowledgeRequest):
+@router.post("/register", response_model=DocumentKnowledgeResponse, summary="문서 등록 (헤더 보안 적용)")
+async def register_document(
+    payload: DocumentKnowledgeRequest,
+    company_code: int = Depends(verify_api_key) # 헤더 검증 가동 및 자동 code 주입
+):
     """
-    웹서버에서 넘겨받은 원본 문서를 마스터(knowledge)와 벡터 상세(knowledge_data) 테이블로 분리 저장합니다.
+    헤더를 통해 인증된 고객사 환경에 새로운 문서를 RAG 임베딩 처리하여 적재합니다.
     """
-    result = await RAGService.process_and_save_document(payload)
+    result = await RAGService.process_and_save_document(company_code, payload)
     return DocumentKnowledgeResponse(
         success=True,
         message="마스터 및 텍스트 분할 청킹 임베딩 구조화 저장이 정상 완료되었습니다.",
-        company_code=result["company_code"],
+        company_code=company_code,
         knowledge_code=result["knowledge_code"],
         total_chunks=result["total_chunks"]
     )
 
-@router.delete("/delete", summary="원본 식별자 기준 일괄 삭제")
-async def delete_document(company_id: str, source_type: str, source_code: str):
+@router.delete("/delete", summary="원본 식별자 기준 일괄 삭제 (헤더 보안 적용)")
+async def delete_document(
+    source_type: str, 
+    source_code: str,
+    company_code: int = Depends(verify_api_key) # 헤더 검증 가동
+):
     """
-    고객사 코드와 원본 식별 정보를 기준으로 마스터 지식을 지웁니다. 
-    Foreign Key 제약 조건에 의해 연관된 모든 벡터 조각 데이터는 원자적으로 자동 제거됩니다.
+    보안 인증된 고객사 내부의 특정 문서를 영구 완전 일괄 삭제합니다.
     """
     supabase = get_supabase()
-    
-    company_res = supabase.table("company").select("code").eq("company_id", company_id).execute()
-    if not company_res.data:
-        raise HTTPException(status_code=404, detail="존재하지 않는 company_id 입니다.")
-    company_code = company_res.data[0]["code"]
-    
-    # 마스터 테이블 데이터만 삭제 처리
     res = supabase.table("knowledge").delete()\
         .eq("company_code", company_code)\
         .eq("source_type", source_type)\

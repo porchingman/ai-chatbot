@@ -11,21 +11,13 @@ ai_client = get_ai_client()
 
 class ChatService:
     @classmethod
-    async def process_chat(cls, req) -> dict:
+    async def process_chat(cls, company_code: int, req) -> dict: # company_code 전면 배치
         start_time = time.time()
         supabase = get_supabase()
 
         # 1. 회사 정보 및 프롬프트 검증
-        company_res = supabase.table("company").select("code", "prompt", "status").eq("company_id", req.company_id).execute()
-        if not company_res.data:
-            raise HTTPException(status_code=404, detail="등록되지 않은 company_id 입니다.")
-        
-        company = company_res.data[0]
-        if company["status"] != "active":
-            raise HTTPException(status_code=403, detail="사용이 정지된 계정입니다.")
-        
-        company_code = company["code"]
-        system_prompt = company["prompt"] or "당신은 친절한 AI 어시스턴트입니다."
+        company_res = supabase.table("company").select("prompt").eq("code", company_code).single().execute()
+        system_prompt = company_res.data.get("prompt") if company_res.data else "당신은 친절한 AI 어시스턴트입니다."
 
         # 2. 질문에 대한 유저 벡터 생성 (통합 클라이언트 채널 사용)
         try:

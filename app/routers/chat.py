@@ -1,16 +1,19 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from app.models.schemas import ChatRequest, ChatResponse
 from app.services.chat_service import ChatService
+from app.dependencies import verify_api_key  # 보안 의존성 추가
 
 router = APIRouter(prefix="/v1/chat", tags=["Chat"])
 
-@router.post("/ask", response_model=ChatResponse, summary="RAG 기반 챗봇 질의응답 및 이력 관리")
-async def ask_question(payload: ChatRequest):
+@router.post("/ask", response_model=ChatResponse, summary="RAG 기반 질의응답 (헤더 보안 적용)")
+async def ask_question(
+    payload: ChatRequest,
+    company_code: int = Depends(verify_api_key) # 👈 헤더 검증 가동 및 자동 code 주입
+):
     """
-    고객사 지식을 실시간 검색(RAG)하고 이전 대화 컨텍스트를 기억하여 유기적인 답변을 생성합니다.
-    사용된 모든 토큰 사용량과 대화 로그는 자동으로 데이터베이스에 안전하게 기록됩니다.
+    헤더의 Secret Key 동기화를 통해 보안 터널을 확보하고 관련 지식을 매칭해 답변합니다.
     """
-    result = await ChatService.process_chat(payload)
+    result = await ChatService.process_chat(company_code, payload)
     return ChatResponse(
         success=True,
         answer=result["answer"],

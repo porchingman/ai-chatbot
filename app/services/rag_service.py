@@ -4,7 +4,6 @@ import os
 from pypdf import PdfReader
 from docx import Document
 import openpyxl
-import olefile
 from fastapi import HTTPException
 from google import genai
 from google.genai import types
@@ -62,9 +61,10 @@ class RAGService:
     @classmethod
     async def download_and_extract_text(cls, url: str) -> list[dict]:
         """
-        [업그레이드] URL 주소의 확장자를 판별하여 동적으로 적절한 파서 엔진을 가동합니다.
+        [최적화] URL 주소의 확장자를 판별하여 동적으로 적절한 파서 엔진을 가동합니다.
+        (PDF, DOCX, XLSX 표준 3종 포맷만 집중 대응)
         """
-        # URL에서 쿼리스트링 제외한 순수 파일명 기반 확장자 획득
+        # URL에서 순수 파일 확장자 추출 및 소문자 변환
         pure_path = url.split("?")[0].lower()
         _, ext = os.path.splitext(pure_path)
 
@@ -91,31 +91,29 @@ class RAGService:
                 return cls.extract_text_from_docx(file_stream)
                 
             elif ext == ".xlsx":
-                return cls.extract_text_from_xlsx(file_stream)                
+                return cls.extract_text_from_xlsx(file_stream)
                 
             else:
-                raise HTTPException(status_code=415, detail=f"지원하지 않는 확장자({ext})입니다. (PDF, DOCX, XLSX, HWP만 가능)")
+                # 한글 파일 차단 및 상용 확장자 제한 메시지 출력
+                raise HTTPException(status_code=415, detail=f"지원하지 않는 확장자({ext})입니다. (PDF, DOCX, XLSX 파일만 등록 가능합니다)")
                 
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=422, detail=f"문서 구조 파싱 실패: {str(e)}")
 
     @classmethod
-    async def process_and_save_document(cls, req) -> dict:
+    async def process_and_save_document(cls, company_code: int, req) -> dict:
         """문서를 마스터(knowledge)와 청크(knowledge_data)로 분리하여 저장하는 파이프라인"""
         supabase = get_supabase()
 
-        company_res = supabase.table("company").select("code").eq("company_id", req.company_id).execute()
-        if not company_res.data:
-            raise HTTPException(status_code=404, detail="존재하지 않는 company_id 입니다.")
-        company_code = company_res.data[0]["code"] # 첫 번째 딕셔너리 안전 접근
-
-        # 설계 원칙: 기존 데이터 선행 삭제 (CASCADE 하위 연동 소멸)
+        # 설계 원칙: 기존 동일 식별자 문서 선행 일괄 제거 (CASCADE 연동 소멸)
         supabase.table("knowledge").delete()\
             .eq("company_code", company_code)\
             .eq("source_type", req.source_type)\
             .eq("source_code", req.source_code).execute()
 
-        # [확장판 작동] 파일 형식별 다운로드 및 자동 텍스트 추출 호출
+        # 파일 형식별 다운로드 및 자동 텍스트 추출 호출
         pages = await cls.download_and_extract_text(str(req.source_url))
 
         # 마스터 테이블 저장 (content 컬럼 비우기 완전 적용)
@@ -130,7 +128,9 @@ class RAGService:
         master_insert = supabase.table("knowledge").insert(master_data).execute()
         if not master_insert.data:
             raise HTTPException(status_code=500, detail="마스터 문서 정보 생성 실패")
-        knowledge_code = master_insert.data[0]["code"] # 인덱싱 보정
+        
+        # Supabase SDK 반환 리스트에서 첫 번째 객체의 code 추출
+        knowledge_code = master_insert.data[0]["code"]
 
         # 청킹 스플리터 가동
         from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -164,6 +164,7 @@ class RAGService:
                 chunks_payload[idx]["embedding"] = embedding_data.values
                 chunks_payload[idx]["embedding_model"] = EMBEDDING_MODEL
         except Exception as e:
+            # 실패 시 트랜잭션 복구 안전장치
             supabase.table("knowledge").delete().eq("code", knowledge_code).execute()
             raise HTTPException(status_code=500, detail=f"Gemini 임베딩 생성 오류: {str(e)}")
 
@@ -174,7 +175,6 @@ class RAGService:
         supabase.table("knowledge").update({"total_token": total_calculated_tokens}).eq("code", knowledge_code).execute()
 
         return {
-            "company_code": company_code,
             "knowledge_code": knowledge_code,
             "total_chunks": len(chunks_payload)
         }
