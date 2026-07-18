@@ -3,6 +3,7 @@ from typing import Optional, List
 
 # 고객사 생성 요청
 class CompanyCreateRequest(BaseModel):
+    company_name: str        # 웹서버 master.company_name
     company_id: str          # 웹서버 master.company_id (고유 식별 문자열)
     api_key: str             # 웹서버 인증용 API KEY
     prompt: Optional[str] = "당신은 친절한 AI 어시스턴트입니다."
@@ -10,6 +11,7 @@ class CompanyCreateRequest(BaseModel):
 
 # 고객사 정보 수정 요청
 class CompanyUpdateRequest(BaseModel):
+    company_name: Optional[str] = None # 변경할 신규 고객사 이름 (선택)
     company_id: Optional[str] = None # 변경할 신규 식별자 (선택)
     api_key: Optional[str] = None    # 변경할 신규 API KEY (선택)
     prompt: Optional[str] = None     # 시스템 프롬프트 (선택)
