@@ -18,6 +18,7 @@ class CompanyUpdateRequest(BaseModel):
 # 고객사 정보 응답 표준
 class CompanyInfoResponse(BaseModel):
     code: int
+    title: str
     company_id: str
     api_key: str
     prompt: Optional[str]

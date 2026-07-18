@@ -1,0 +1,88 @@
+-- 1. pgvector 확장 모듈 활성화
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- 2. company (고객사 및 토큰 사용량 관리) 테이블
+CREATE TABLE IF NOT EXISTS company (
+    code SERIAL PRIMARY KEY,
+    title VARCHAR(100) NOT NULL,
+    company_id VARCHAR(50) UNIQUE NOT NULL,
+    api_key VARCHAR(100) UNIQUE NOT NULL,
+    total_input_token BIGINT DEFAULT 0 NOT NULL,
+    total_output_token BIGINT DEFAULT 0 NOT NULL,
+    total_token BIGINT DEFAULT 0 NOT NULL,
+    total_question INT DEFAULT 0 NOT NULL,
+    prompt TEXT,
+    status VARCHAR(10) DEFAULT 'ACTIVE' NOT NULL, -- ACTIVE, SUSPENDED 등
+    reg_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    upd_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+-- 자동 upd_date 업데이트 트리거 함수
+CREATE OR REPLACE FUNCTION update_timestamp_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.upd_date = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_company_modtime
+    BEFORE UPDATE ON company
+    FOR EACH ROW
+    EXECUTE FUNCTION update_timestamp_column();
+
+-- 3. knowledge (문서 청크 및 벡터 데이터) 테이블
+CREATE TABLE knowledge (
+    code SERIAL PRIMARY KEY,
+    company_code INT REFERENCES company(code) ON DELETE CASCADE NOT NULL,
+    source_type VARCHAR(20) NOT NULL,    -- FILE, URL, TEXT 등
+    source_code VARCHAR(100) NOT NULL,   -- 웹서버의 attachment.code 등
+    source_url TEXT,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,               -- 문서 전체 텍스트 또는 요약 (필요시 사용)
+    total_token INT DEFAULT 0 NOT NULL,
+    reg_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+-- 웹서버와 연동 및 삭제 조건 검색용 인덱스
+CREATE INDEX idx_knowledge_lookup ON knowledge(company_code, source_type, source_code);
+
+-- 3. knowledge_data (세부 청크 및 벡터 데이터) 테이블
+CREATE TABLE knowledge_data (
+    code SERIAL PRIMARY KEY,
+    knowledge_code INT REFERENCES knowledge(code) ON DELETE CASCADE NOT NULL, -- 마스터 삭제 시 자동 삭제
+    company_code INT REFERENCES company(code) ON DELETE CASCADE NOT NULL,     -- 검색 최적화용 필드 유지
+    embedding VECTOR(768) NOT NULL, -- Gemini text-embedding-004 기준
+    embedding_model VARCHAR(50) NOT NULL,
+    chunk_no INT NOT NULL,
+    page_no INT DEFAULT 1 NOT NULL,
+    content TEXT NOT NULL,          -- RAG 컨텍스트 서빙용 실제 조각 텍스트 (누락 보완 추가)
+    token INT DEFAULT 0 NOT NULL,   -- (주신 totken 오타 보정)
+    reg_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+-- 벡터 유사도 검색용 인덱스 (HNSW 알고리즘, 코사인 유사도 기준)
+CREATE INDEX idx_knowledge_data_embedding ON knowledge_data USING hnsw (embedding vector_cosine_ops);
+-- 특정 회사 내부에서만 벡터 검색을 바인딩하기 위한 복합 인덱스
+CREATE INDEX idx_knowledge_data_search ON knowledge_data(company_code);
+
+-- 4. chat_history (대화 이력) 테이블
+CREATE TABLE IF NOT EXISTS chat_history (
+    code SERIAL PRIMARY KEY,
+    company_code INT REFERENCES company(code) ON DELETE CASCADE NOT NULL,
+    member_code VARCHAR(50) NOT NULL,
+    conversation_id VARCHAR(50) NULL, -- 미래 확장용
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    input_token INT DEFAULT 0 NOT NULL,
+    output_token INT DEFAULT 0 NOT NULL,
+    token INT DEFAULT 0 NOT NULL,
+    response_time INT NOT NULL, -- 밀리초(ms) 단위 기재
+    ip VARCHAR(45) NOT NULL,
+    reg_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+-- 메모리 조회 및 이력 통계 최적화 인덱스
+CREATE INDEX IF NOT EXISTS idx_chat_history_memory 
+ON chat_history(company_code, member_code, reg_date DESC);
+
