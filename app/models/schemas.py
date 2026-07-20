@@ -30,6 +30,7 @@ class CompanyInfoResponse(BaseModel):
     total_token: int
     total_question: int
     reg_date: str
+    upd_date: str
 
 class CompanyCommonResponse(BaseModel):
     success: bool
