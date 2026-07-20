@@ -28,6 +28,7 @@ class CompanyService:
             "company_id": req.company_id,
             "api_key": req.api_key,
             "prompt": req.prompt,
+            "greetings": req.greetings,
             "status": req.status
         }
         
@@ -137,7 +138,7 @@ class CompanyService:
         # 인사말 처리
         if req.greetings is not None:
             update_data["greetings"] = req.greetings
-            
+
         # 기존 상태 제어 및 도메인 유효성 체크
         if req.status is not None:
             if req.status not in ["active", "ready", "withdrawal"]:
