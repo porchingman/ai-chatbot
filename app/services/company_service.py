@@ -47,6 +47,20 @@ class CompanyService:
             raise HTTPException(status_code=404, detail="존재하지 않는 고객사(code)입니다.")
             
         return res.data[0]
+    
+    @staticmethod
+    def get_company_by_apikey(api_key: str) -> dict:
+        """[신규 추가] api_key 단독 고유 값을 기준으로 고객사 상세 정보를 역추적 조회합니다."""
+        supabase = get_supabase()
+        
+        # api_key 일치 레코드 스캔
+        res = supabase.table("company").select("*").eq("api_key", api_key).execute()
+        
+        if not res.data:
+            raise HTTPException(status_code=404, detail="인증 실패: 존재하지 않거나 유효하지 않은 api_key 입니다.")
+            
+        # 상용 안전장치: 결과 배열 구조에서 첫 번째 레코드 JSON 객체만 정확히 꺼내어 단일 객체 리턴
+        return res.data[0]
 
     @staticmethod
     def get_company_list(page: int = 1, limit: int = 10) -> dict:

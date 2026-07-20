@@ -2,6 +2,7 @@ from fastapi import APIRouter, status, Query, Depends
 from app.models.schemas import CompanyCreateRequest, CompanyUpdateRequest, CompanyInfoResponse, CompanyCommonResponse, CompanyListResponse
 from app.services.company_service import CompanyService
 from app.dependencies import verify_super_admin # 👈 신규 슈퍼 어드민 의존성 임포트
+from app.models.schemas import CompanyApiKeyLookupRequest # 임포트 추가 필수
 
 router = APIRouter(prefix="/v1/company", tags=["Company Admin"])
 
@@ -36,6 +37,14 @@ def get_company_info(
     고유 일련번호(code)를 매핑하여 특정 단일 고객사의 실시간 토큰 스펙을 수집합니다.
     """
     return CompanyService.get_company(code)
+
+@router.post("/info_apikey", response_model=CompanyInfoResponse, summary="[어드민/웹 연동] api_key 단독 기준 기업 상세 정보 역추적")
+def get_company_info_by_apikey(payload: CompanyApiKeyLookupRequest):
+    """
+    [보안 확장] 패스워드 검증 체계처럼 api_key 값만 단독으로 대조하여 
+    해당 키를 소유한 기업의 code, company_id, status, 누적 토큰 정산 현황 전체 정보를 수집합니다.
+    """
+    return CompanyService.get_company_by_apikey(payload.api_key)
 
 @router.put("/update/{code}", response_model=CompanyInfoResponse, summary="[마스터 어드민] 기업 상태 변경 또는 프롬프트/키 개편")
 def update_company(

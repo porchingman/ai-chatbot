@@ -1,6 +1,10 @@
 from pydantic import BaseModel, HttpUrl
 from typing import Optional, List
 
+# [신규 추가] API Key 단독 기반 조회 요청 스키마
+class CompanyApiKeyLookupRequest(BaseModel):
+    api_key: str             # 웹서버에서 넘겨줄 검증 대상 Secret API KEY
+
 # 고객사 생성 요청
 class CompanyCreateRequest(BaseModel):
     company_name: str        # 웹서버 master.company_name
