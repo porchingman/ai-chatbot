@@ -11,6 +11,7 @@ class CompanyCreateRequest(BaseModel):
     company_id: str          # 웹서버 master.company_id (고유 식별 문자열)
     api_key: str             # 웹서버 인증용 API KEY
     prompt: Optional[str] = "당신은 친절한 AI 어시스턴트입니다."
+    greetings: Optional[str] = "안녕하세요! 무엇을 도와드릴까요?"
     status: Optional[str] = "ready"  # 초기 상태는 'ready'로 설정 (active, ready, withdrawal)
 
 # 고객사 정보 수정 요청
@@ -19,6 +20,7 @@ class CompanyUpdateRequest(BaseModel):
     company_id: Optional[str] = None # 변경할 신규 식별자 (선택)
     api_key: Optional[str] = None    # 변경할 신규 API KEY (선택)
     prompt: Optional[str] = None     # 시스템 프롬프트 (선택)
+    greetings: Optional[str] = None  # 인사말 (선택)
     status: Optional[str] = None     # active, ready, withdrawal (선택)
 
 # 고객사 정보 응답 표준
