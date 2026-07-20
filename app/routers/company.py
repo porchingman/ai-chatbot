@@ -1,5 +1,5 @@
 from fastapi import APIRouter, status, Query, Depends
-from app.models.schemas import CompanyCreateRequest, CompanyUpdateRequest, CompanyInfoResponse, CompanyCommonResponse, CompanyListResponse
+from app.models.schemas import CompanyCreateRequest, CompanyUpdateRequest, CompanyInfoResponse, CompanyInfoResponseByApikey, CompanyCommonResponse, CompanyListResponse
 from app.services.company_service import CompanyService
 from app.dependencies import verify_super_admin # 👈 신규 슈퍼 어드민 의존성 임포트
 from app.models.schemas import CompanyApiKeyLookupRequest # 임포트 추가 필수
@@ -38,7 +38,7 @@ def get_company_info(
     """
     return CompanyService.get_company(code)
 
-@router.post("/info_apikey", response_model=CompanyInfoResponse, summary="[어드민/웹 연동] api_key 단독 기준 기업 상세 정보 역추적")
+@router.post("/info_apikey", response_model=CompanyInfoResponseByApikey, summary="[어드민/웹 연동] api_key 단독 기준 기업 상세 정보 역추적")
 def get_company_info_by_apikey(payload: CompanyApiKeyLookupRequest):
     """
     [보안 확장] 패스워드 검증 체계처럼 api_key 값만 단독으로 대조하여 

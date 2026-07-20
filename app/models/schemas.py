@@ -36,6 +36,12 @@ class CompanyInfoResponse(BaseModel):
     reg_date: str
     upd_date: str
 
+# 고객사 정보 응답 by api_key
+class CompanyInfoResponseByApikey(BaseModel):    
+    company_id: str
+    company_name: str
+    greetings: Optional[str]
+
 class CompanyCommonResponse(BaseModel):
     success: bool
     message: str
