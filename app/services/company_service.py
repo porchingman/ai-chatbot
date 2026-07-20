@@ -24,6 +24,7 @@ class CompanyService:
 
         # 4. [제안해주신 구조 적용] 딕셔너리 빌드
         insert_data = {
+            "company_name": req.company_name,
             "company_id": req.company_id,
             "api_key": req.api_key,
             "prompt": req.prompt,
@@ -90,6 +91,7 @@ class CompanyService:
         # 2. 업데이트 쿼리에 바인딩할 데이터 배열 빌드
         update_data = {}
         
+        update_data["company_name"] = req.company_name
         # [신규 추가] company_id 변경 및 본인 제외 중복 검증
         if req.company_id is not None:
             # 타 회사 중 새로운 company_id를 이미 선점한 곳이 있는지 검증

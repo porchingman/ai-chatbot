@@ -59,6 +59,6 @@ def delete_company(
     CompanyService.delete_company(code)
     return CompanyCommonResponse(
         success=True,
-        message="요청하신 고유 코드의 기업 레코드 및 하위 벡터 지식이 완전 증발 처리되었습니다.",
+        message="요청하신 고유 코드의 기업 레코드 및 하위 벡터 지식이 삭제 처리되었습니다.",
         code=code
     )
