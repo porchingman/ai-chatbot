@@ -28,6 +28,7 @@ class CompanyInfoResponse(BaseModel):
     company_id: str
     api_key: str
     prompt: Optional[str]
+    greetings: Optional[str]
     status: str
     total_input_token: int
     total_output_token: int
