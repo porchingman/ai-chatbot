@@ -133,6 +133,10 @@ class CompanyService:
         # 기존 프롬프트 처리
         if req.prompt is not None:
             update_data["prompt"] = req.prompt
+
+        # 인사말 처리
+        if req.greetings is not None:
+            update_data["greetings"] = req.greetings
             
         # 기존 상태 제어 및 도메인 유효성 체크
         if req.status is not None:
