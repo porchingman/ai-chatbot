@@ -55,7 +55,7 @@ class CompanyService:
         supabase = get_supabase()
         
         # api_key 일치 레코드 스캔
-        res = supabase.table("company").select("company_id,api_key,company_name,greetings").eq("api_key", api_key).execute()
+        res = supabase.table("company").select("code,company_id,api_key,company_name,greetings").eq("api_key", api_key).execute()
         
         if not res.data:
             raise HTTPException(status_code=404, detail="인증 실패: 존재하지 않거나 유효하지 않은 api_key 입니다.")

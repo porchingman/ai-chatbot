@@ -41,6 +41,7 @@ class CompanyInfoResponse(BaseModel):
 
 # 고객사 정보 응답 by api_key
 class CompanyInfoResponseByApikey(BaseModel):    
+    code: int
     company_id: str
     api_key: str
     company_name: str
