@@ -1,10 +1,20 @@
 from fastapi import APIRouter, HTTPException, Depends
-from app.models.schemas import DocumentKnowledgeRequest, DocumentKnowledgeResponse
+from app.models.schemas import DocumentKnowledgeRequest, DocumentKnowledgeResponse, KnowledgeListResponse
 from app.services.rag_service import RAGService
 from app.dependencies import verify_api_key  # 보안 의존성 추가
 from app.database import get_supabase
 
 router = APIRouter(prefix="/v1/knowledge", tags=["Knowledge"])
+
+@router.get("/list", response_model=KnowledgeListResponse, summary="[어드민/SaaS] 기업이 학습시킨 원본 문서 마스터 전체 목록 조회")
+def get_knowledge_list(
+    company_code: int = Depends(verify_api_key) # 👈 보안 헤더 검증 및 자동 고유 일련번호(code) 확보
+):
+    """
+    HTTP 헤더(X-Company-Id, X-Api-Key) 인증 체계를 거쳐 
+    해당 기업 고객이 현재까지 학습 완료한 '원본 문서(knowledge)' 전체 목록을 반환합니다.
+    """
+    return RAGService.get_knowledge_list_by_company(company_code)
 
 @router.post("/register", response_model=DocumentKnowledgeResponse, summary="문서 등록 (헤더 보안 적용)")
 async def register_document(

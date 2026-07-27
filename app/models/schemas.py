@@ -74,6 +74,25 @@ class DocumentKnowledgeResponse(BaseModel):
     knowledge_code: int
     total_chunks: int
 
+# app/models/schemas.py 최하단에 추가
+
+# 지식 마스터 문서 단일 응답 스펙 (content는 용량 최적화로 생략되거나 빈값 처리)
+class KnowledgeMasterResponse(BaseModel):
+    code: int
+    company_code: int
+    source_type: str         # FILE, URL, TEXT 등
+    source_code: str         # 웹서버의 문서 키값
+    source_url: Optional[str] = None
+    title: str               # 파일명 또는 제목
+    total_token: int         # 학습된 청크들의 총 토큰 합
+    reg_date: str       # 대한민국 서울 시간 기준 가입 일시    
+
+# 지식 마스터 문서 목록 전체 응답 표준
+class KnowledgeListResponse(BaseModel):
+    success: bool
+    total_count: int
+    data: List[KnowledgeMasterResponse]
+
 # 챗봇 질의응답 요청/응답 스키마
 class ChatRequest(BaseModel):
     member_code: str         # 대화 주체 식별 (메모리 관리용)

@@ -178,3 +178,25 @@ class RAGService:
             "knowledge_code": knowledge_code,
             "total_chunks": len(chunks_payload)
         }
+
+    @staticmethod
+    def get_knowledge_list_by_company(company_code: int) -> dict:
+        """
+        [요구사항 반영 정정] 
+        인증된 company_code를 추적하여
+        knowledge 테이블에 등록된 원본 문서 마스터 전체 리스트를 조회합니다.
+        """
+        supabase = get_supabase()
+        
+        # 주신 사양에 맞춰 knowledge 테이블에서 해당 회사의 모든 원본 서류 목록을 최신순 스캔
+        res = supabase.table("knowledge") \
+            .select("code, company_code, source_type, source_code, source_url, title, total_token, reg_date") \
+            .eq("company_code", company_code) \
+            .order("code", desc=True) \
+            .execute()
+            
+        return {
+            "success": True,
+            "total_count": len(res.data) if res.data else 0,
+            "data": res.data if res.data else []
+        }
