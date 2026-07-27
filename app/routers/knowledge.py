@@ -7,14 +7,15 @@ from app.database import get_supabase
 router = APIRouter(prefix="/v1/knowledge", tags=["Knowledge"])
 
 @router.get("/list", response_model=KnowledgeListResponse, summary="[어드민/SaaS] 기업이 학습시킨 원본 문서 마스터 전체 목록 조회")
-def get_knowledge_list(
-    company_code: int = Depends(verify_api_key) # 👈 보안 헤더 검증 및 자동 고유 일련번호(code) 확보
+async def get_knowledge_list( # async def 상태 유지
+    company_code: int = Depends(verify_api_key)
 ):
     """
-    HTTP 헤더(X-Company-Id, X-Api-Key) 인증 체계를 거쳐 
-    해당 기업 고객이 현재까지 학습 완료한 '원본 문서(knowledge)' 전체 목록을 반환합니다.
+    HTTP 헤더 인증 체계를 거쳐 해당 기업 고객이 현재까지 학습 완료한 '원본 문서(knowledge)' 전체 목록을 반환합니다.
     """
-    return RAGService.get_knowledge_list_by_company(company_code)
+    # 👈 비동기 패치에 맞춰 앞에 'await' 키워드를 반드시 주입합니다.
+    return await RAGService.get_knowledge_list_by_company(company_code) 
+
 
 @router.post("/register", response_model=DocumentKnowledgeResponse, summary="문서 등록 (헤더 보안 적용)")
 async def register_document(
