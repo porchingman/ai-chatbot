@@ -180,7 +180,7 @@ class RAGService:
         }
 
     @classmethod
-    async def get_knowledge_list_by_company(company_code: int) -> dict: # 👈 async def로 비동기 선언 변경
+    async def get_knowledge_list_by_company(cls,company_code: int) -> dict: # 👈 async def로 비동기 선언 변경
         """
         [요구사항 반영 정정] 
         인증된 company_code를 추적하여
