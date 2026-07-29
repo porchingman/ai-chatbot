@@ -1,6 +1,7 @@
 import io
 import os
 import uuid
+import logging
 from pypdf import PdfReader
 from docx import Document
 import openpyxl
@@ -13,6 +14,7 @@ from app.database import get_supabase
 from app.ai import get_ai_client, EMBEDDING_MODEL
 
 ai_client = get_ai_client()
+logger = logging.getLogger("rag_service")
 
 # 등록 가능한 확장자 (webserver 단에서 업로드 되는 원본 문서 포맷 제한)
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx"}
@@ -246,7 +248,7 @@ class RAGService:
     @classmethod
     async def get_download_target(cls, company_code: int, code: int) -> dict:
         """
-        [신규] 다운로드 요청 시 해당 company_code 소유의 문서가 맞는지 검증하고,
+        다운로드 요청 시 해당 company_code 소유의 문서가 맞는지 검증하고,
         실제 물리 파일 경로(UPLOAD_ROOT + file_path + file_name)와 원본 파일명을 반환합니다.
         """
         supabase = get_supabase()
@@ -263,6 +265,19 @@ class RAGService:
         row = target.data[0]
         # DB의 file_path는 UPLOAD_ROOT(/user)가 빠진 상태(예: /1)로 저장되어 있으므로 다시 결합
         full_path = os.path.join(settings.UPLOAD_ROOT, row["file_path"].lstrip("/"), row["file_name"])
+
+        # ===== [디버그 로그] 실제 조회 경로 및 존재 여부 확인용 =====
+        dir_path = os.path.dirname(full_path)
+        dir_exists = os.path.isdir(dir_path)
+        dir_listing = os.listdir(dir_path) if dir_exists else []
+        logger.info(
+            "[knowledge/download] code=%s company_code=%s "
+            "UPLOAD_ROOT=%s db.file_path=%s db.file_name=%s "
+            "full_path=%s exists=%s dir_exists=%s dir_listing=%s",
+            code, company_code, settings.UPLOAD_ROOT, row["file_path"], row["file_name"],
+            full_path, os.path.exists(full_path), dir_exists, dir_listing
+        )
+ 
  
         if not os.path.exists(full_path):
             raise HTTPException(status_code=404, detail="물리 파일이 서버에 존재하지 않습니다. (재배포로 유실되었을 수 있습니다)")
