@@ -36,13 +36,14 @@ async def register_document(
         total_chunks=result["total_chunks"]
     )
 
-@router.delete("/delete", summary="knowledge 코드 기준 단건 삭제 (헤더 보안 적용)")
+@router.delete("/delete/{code}", summary="knowledge 코드 기준 단건 삭제 (헤더 보안 적용)")
 async def delete_document(
     code: int,
     company_code: int = Depends(verify_api_key)  # 헤더 검증 가동
 ):
     """
-    보안 인증된 고객사 내부의 특정 문서(knowledge.code 기준)를 물리 파일과 함께 완전 삭제합니다.
+    보안 인증된 고객사 내부의 특정 문서(knowledge.code 기준, path parameter)를
+    물리 파일과 함께 완전 삭제합니다.
     (knowledge_data 하위 청크는 FK CASCADE로 자동 삭제됩니다)
     """
     return await RAGService.delete_document(company_code, code)
