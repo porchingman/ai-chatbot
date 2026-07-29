@@ -244,6 +244,35 @@ class RAGService:
         }
 
     @classmethod
+    async def get_download_target(cls, company_code: int, code: int) -> dict:
+        """
+        [신규] 다운로드 요청 시 해당 company_code 소유의 문서가 맞는지 검증하고,
+        실제 물리 파일 경로(UPLOAD_ROOT + file_path + file_name)와 원본 파일명을 반환합니다.
+        """
+        supabase = get_supabase()
+ 
+        target = supabase.table("knowledge") \
+            .select("code, file_path, file_name, orig_name") \
+            .eq("company_code", company_code) \
+            .eq("code", code) \
+            .execute()
+ 
+        if not target.data:
+            raise HTTPException(status_code=404, detail="요청하신 문서 정보를 찾을 수 없습니다.")
+ 
+        row = target.data[0]
+        # DB의 file_path는 UPLOAD_ROOT(/user)가 빠진 상태(예: /1)로 저장되어 있으므로 다시 결합
+        full_path = os.path.join(settings.UPLOAD_ROOT, row["file_path"].lstrip("/"), row["file_name"])
+ 
+        if not os.path.exists(full_path):
+            raise HTTPException(status_code=404, detail="물리 파일이 서버에 존재하지 않습니다. (재배포로 유실되었을 수 있습니다)")
+ 
+        return {
+            "full_path": full_path,
+            "orig_name": row["orig_name"],
+        }
+
+    @classmethod
     async def delete_document(cls, company_code: int, code: int) -> dict:
         """
         [변경] 더 이상 source_type/source_code 개념이 없으므로

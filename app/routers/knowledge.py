@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from app.models.schemas import DocumentKnowledgeResponse, KnowledgeListResponse
 from app.services.rag_service import RAGService
 from app.dependencies import verify_api_key  # 보안 의존성 추가
@@ -36,6 +37,21 @@ async def register_document(
         total_chunks=result["total_chunks"]
     )
 
+@router.get("/download/{code}", summary="knowledge 코드 기준 원본 파일 다운로드 (헤더 보안 적용)")
+async def download_document(
+    code: int,
+    company_code: int = Depends(verify_api_key)
+):
+    """
+    보안 인증된 고객사 소유의 문서(knowledge.code 기준)를 실제 원본 파일명 그대로 다운로드합니다.
+    """
+    target = await RAGService.get_download_target(company_code, code)
+    return FileResponse(
+        path=target["full_path"],
+        filename=target["orig_name"],   # 다운로드 시 사용자가 업로드했던 원본 파일명 그대로 노출
+        media_type="application/octet-stream"
+    )
+ 
 @router.delete("/delete/{code}", summary="knowledge 코드 기준 단건 삭제 (헤더 보안 적용)")
 async def delete_document(
     code: int,
