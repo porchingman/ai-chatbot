@@ -1,10 +1,10 @@
 import io
-import httpx
 import os
+import uuid
 from pypdf import PdfReader
 from docx import Document
 import openpyxl
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from google import genai
 from google.genai import types
 
@@ -14,14 +14,29 @@ from app.ai import get_ai_client, EMBEDDING_MODEL
 
 ai_client = get_ai_client()
 
+# 등록 가능한 확장자 (webserver 단에서 업로드 되는 원본 문서 포맷 제한)
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx"}
+
+
 class RAGService:
+    @staticmethod
+    def extract_text_from_pdf(file_stream) -> list[dict]:
+        """PDF 파일에서 페이지 단위로 텍스트 추출"""
+        reader = PdfReader(file_stream)
+        pages_content = []
+        for page_num, page in enumerate(reader.pages, start=1):
+            text = page.extract_text()
+            if text and text.strip():
+                pages_content.append({"page_no": page_num, "text": text.strip()})
+        return pages_content
+
     @staticmethod
     def extract_text_from_docx(file_stream) -> list[dict]:
         """Word(.docx) 파일에서 텍스트를 페이지 개념 대신 일정 문단 단위로 추출"""
         doc = Document(file_stream)
         text_list = []
         current_text = []
-        
+
         for para in doc.paragraphs:
             if para.text.strip():
                 current_text.append(para.text.strip())
@@ -29,10 +44,10 @@ class RAGService:
             if len("\n".join(current_text)) > 500:
                 text_list.append("\n".join(current_text))
                 current_text = []
-                
+
         if current_text:
             text_list.append("\n".join(current_text))
-            
+
         return [{"page_no": i, "text": text} for i, text in enumerate(text_list, start=1)]
 
     @staticmethod
@@ -40,17 +55,17 @@ class RAGService:
         """Excel(.xlsx) 파일에서 행 데이터를 텍스트로 보존하며 시트 단위 추출"""
         wb = openpyxl.load_workbook(file_stream, data_only=True)
         pages_content = []
-        
+
         for sheet_idx, sheet_name in enumerate(wb.sheetnames, start=1):
             sheet = wb[sheet_name]
             sheet_text = [f"--- 시트명: {sheet_name} ---"]
-            
+
             for row in sheet.iter_rows(values_only=True):
                 # 공백 셀 제외하고 한 줄의 텍스트 라인 조립
                 row_text = ", ".join([str(cell).strip() for cell in row if cell is not None])
                 if row_text.strip():
                     sheet_text.append(row_text)
-                    
+
             if len(sheet_text) > 1:
                 pages_content.append({
                     "page_no": sheet_idx,
@@ -59,144 +74,206 @@ class RAGService:
         return pages_content
 
     @classmethod
-    async def download_and_extract_text(cls, url: str) -> list[dict]:
+    def extract_text_from_local_file(cls, file_full_path: str, file_ext: str) -> list[dict]:
         """
-        [최적화] URL 주소의 확장자를 판별하여 동적으로 적절한 파서 엔진을 가동합니다.
-        (PDF, DOCX, XLSX 표준 3종 포맷만 집중 대응)
+        [변경] 네트워크 다운로드 없이, AI 서버 로컬 디스크에 저장된 파일을 직접 열어
+        확장자에 맞는 파서 엔진으로 텍스트를 추출합니다.
         """
-        # URL에서 순수 파일 확장자 추출 및 소문자 변환
-        pure_path = url.split("?")[0].lower()
-        _, ext = os.path.splitext(pure_path)
+        if not os.path.exists(file_full_path):
+            raise HTTPException(status_code=404, detail=f"저장된 학습 파일을 찾을 수 없습니다: {file_full_path}")
 
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            try:
-                response = await client.get(url)
-                response.raise_for_status()
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"파일 다운로드 실패: {str(e)}")
-
-        file_stream = io.BytesIO(response.content)
+        with open(file_full_path, "rb") as f:
+            file_stream = io.BytesIO(f.read())
 
         try:
-            if ext == ".pdf":
-                reader = PdfReader(file_stream)
-                pages_content = []
-                for page_num, page in enumerate(reader.pages, start=1):
-                    text = page.extract_text()
-                    if text and text.strip():
-                        pages_content.append({"page_no": page_num, "text": text.strip()})
-                return pages_content
-                
-            elif ext == ".docx":
+            if file_ext == ".pdf":
+                return cls.extract_text_from_pdf(file_stream)
+            elif file_ext == ".docx":
                 return cls.extract_text_from_docx(file_stream)
-                
-            elif ext == ".xlsx":
+            elif file_ext == ".xlsx":
                 return cls.extract_text_from_xlsx(file_stream)
-                
             else:
-                # 한글 파일 차단 및 상용 확장자 제한 메시지 출력
-                raise HTTPException(status_code=415, detail=f"지원하지 않는 확장자({ext})입니다. (PDF, DOCX, XLSX 파일만 등록 가능합니다)")
-                
+                raise HTTPException(status_code=415, detail=f"지원하지 않는 확장자({file_ext})입니다. (PDF, DOCX, XLSX 파일만 등록 가능합니다)")
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(status_code=422, detail=f"문서 구조 파싱 실패: {str(e)}")
 
     @classmethod
-    async def process_and_save_document(cls, company_code: int, req) -> dict:
-        """문서를 마스터(knowledge)와 청크(knowledge_data)로 분리하여 저장하는 파이프라인"""
+    async def save_uploaded_file(cls, company_code: int, upload_file: UploadFile) -> dict:
+        """
+        [신규] 웹서버로부터 전달받은 업로드 파일을 AI 서버 로컬 경로
+        {UPLOAD_ROOT}/{company_code}/{생성된 파일명.확장자} 에 저장합니다.
+        """
+        orig_name = upload_file.filename or "untitled"
+        _, ext = os.path.splitext(orig_name)
+        file_ext = ext.lower()
+
+        if file_ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(status_code=415, detail=f"지원하지 않는 확장자({file_ext})입니다. (PDF, DOCX, XLSX 파일만 등록 가능합니다)")
+
+        # 회사별 저장 디렉터리: /user/{company_code}
+        dir_path = os.path.join(settings.UPLOAD_ROOT, str(company_code))
+        os.makedirs(dir_path, exist_ok=True)
+
+        # 파일명 충돌 방지를 위해 고유 파일명 생성 (원본명은 orig_name 컬럼에 별도 보관)
+        stored_file_name = f"{uuid.uuid4().hex}{file_ext}"
+        full_path = os.path.join(dir_path, stored_file_name)
+
+        content = await upload_file.read()
+        file_size = len(content)
+
+        with open(full_path, "wb") as f:
+            f.write(content)
+
+        return {
+            "file_path": f"/{company_code}",  # 예: /1 (실제 물리 경로의 UPLOAD_ROOT(/user)는 DB에 저장하지 않음)
+            "file_name": stored_file_name,       # 예: 3f1c...ab.pdf
+            "orig_name": orig_name,              # 예: 회사소개서.pdf
+            "file_size": file_size,
+            "file_ext": file_ext.lstrip("."),    # 예: pdf
+            "full_path": full_path,
+        }
+
+    @classmethod
+    async def process_and_save_document(cls, company_code: int, upload_file: UploadFile, title: str) -> dict:
+        """
+        [변경] 웹서버단에서 파일 업로드가 오면
+        1) AI 서버 로컬 경로에 파일 저장
+        2) 저장된 파일을 읽어 텍스트 추출/청킹/임베딩
+        3) knowledge 마스터 + knowledge_data(vector) 저장
+        하는 전체 파이프라인
+        """
         supabase = get_supabase()
 
-        # 설계 원칙: 기존 동일 식별자 문서 선행 일괄 제거 (CASCADE 연동 소멸)
-        supabase.table("knowledge").delete()\
-            .eq("company_code", company_code)\
-            .eq("source_type", req.source_type)\
-            .eq("source_code", req.source_code).execute()
+        # 1) 파일 저장
+        saved = await cls.save_uploaded_file(company_code, upload_file)
 
-        # 파일 형식별 다운로드 및 자동 텍스트 추출 호출
-        pages = await cls.download_and_extract_text(str(req.source_url))
-
-        # 마스터 테이블 저장 (content 컬럼 비우기 완전 적용)
+        # 2) knowledge 마스터 우선 저장 (token은 0으로 시작 후 계산되면 갱신)
         master_data = {
             "company_code": company_code,
-            "source_type": req.source_type,
-            "source_code": req.source_code,
-            "source_url": str(req.source_url),
-            "title": req.title,
-            "total_token": 0 
+            "title": title,
+            "file_path": saved["file_path"],
+            "file_name": saved["file_name"],
+            "orig_name": saved["orig_name"],
+            "file_size": saved["file_size"],
+            "file_ext": saved["file_ext"],
+            "token": 0,
         }
         master_insert = supabase.table("knowledge").insert(master_data).execute()
         if not master_insert.data:
             raise HTTPException(status_code=500, detail="마스터 문서 정보 생성 실패")
-        
-        # Supabase SDK 반환 리스트에서 첫 번째 객체의 code 추출
+
         knowledge_code = master_insert.data[0]["code"]
-
-        # 청킹 스플리터 가동
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-
         chunks_payload = []
-        chunk_no = 1
 
-        for page_data in pages:
-            split_texts = text_splitter.split_text(page_data["text"])
-            for text_chunk in split_texts:
-                chunks_payload.append({
-                    "knowledge_code": knowledge_code,
-                    "company_code": company_code,
-                    "content": text_chunk, 
-                    "chunk_no": chunk_no,
-                    "page_no": page_data["page_no"],
-                    "token": len(text_chunk)
-                })
-                chunk_no += 1
-
-        # Gemini 임베딩 생성 (768차원 최신 제한 옵션 일치)
         try:
-            texts_to_embed = [c["content"] for c in chunks_payload]
-            embed_response = ai_client.models.embed_content(
-                model=EMBEDDING_MODEL,
-                contents=texts_to_embed,
-                config=types.EmbedContentConfig(output_dimensionality=768)
-            )
-            for idx, embedding_data in enumerate(embed_response.embeddings):
-                chunks_payload[idx]["embedding"] = embedding_data.values
-                chunks_payload[idx]["embedding_model"] = EMBEDDING_MODEL
-        except Exception as e:
-            # 실패 시 트랜잭션 복구 안전장치
+            # 3) 저장된 로컬 파일을 읽어 텍스트 추출
+            pages = cls.extract_text_from_local_file(saved["full_path"], "." + saved["file_ext"])
+
+            # 4) 청킹 스플리터 가동
+            from langchain_text_splitters import RecursiveCharacterTextSplitter
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+
+            chunk_no = 1
+            for page_data in pages:
+                split_texts = text_splitter.split_text(page_data["text"])
+                for text_chunk in split_texts:
+                    chunks_payload.append({
+                        "knowledge_code": knowledge_code,
+                        "company_code": company_code,
+                        "content": text_chunk,
+                        "chunk_no": chunk_no,
+                        "page_no": page_data["page_no"],
+                        "token": len(text_chunk)
+                    })
+                    chunk_no += 1
+
+            # 5) Gemini 임베딩 생성 (768차원 최신 제한 옵션 일치)
+            if chunks_payload:
+                try:
+                    texts_to_embed = [c["content"] for c in chunks_payload]
+                    embed_response = ai_client.models.embed_content(
+                        model=EMBEDDING_MODEL,
+                        contents=texts_to_embed,
+                        config=types.EmbedContentConfig(output_dimensionality=768)
+                    )
+                    for idx, embedding_data in enumerate(embed_response.embeddings):
+                        chunks_payload[idx]["embedding"] = embedding_data.values
+                        chunks_payload[idx]["embedding_model"] = EMBEDDING_MODEL
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=f"Gemini 임베딩 생성 오류: {str(e)}")
+
+                supabase.table("knowledge_data").insert(chunks_payload).execute()
+
+            total_calculated_tokens = sum([c["token"] for c in chunks_payload])
+            supabase.table("knowledge").update({"token": total_calculated_tokens}).eq("code", knowledge_code).execute()
+
+        except Exception:
+            # 실패 시 트랜잭션 복구 안전장치: 마스터 row 및 저장된 물리 파일 함께 정리
             supabase.table("knowledge").delete().eq("code", knowledge_code).execute()
-            raise HTTPException(status_code=500, detail=f"Gemini 임베딩 생성 오류: {str(e)}")
-
-        if chunks_payload:
-            supabase.table("knowledge_data").insert(chunks_payload).execute()
-
-        total_calculated_tokens = sum([c["token"] for c in chunks_payload])
-        supabase.table("knowledge").update({"total_token": total_calculated_tokens}).eq("code", knowledge_code).execute()
+            if os.path.exists(saved["full_path"]):
+                os.remove(saved["full_path"])
+            raise
 
         return {
             "knowledge_code": knowledge_code,
+            "file_name": saved["file_name"],
+            "orig_name": saved["orig_name"],
             "total_chunks": len(chunks_payload)
         }
 
     @classmethod
-    async def get_knowledge_list_by_company(cls,company_code: int) -> dict: # 👈 async def로 비동기 선언 변경
+    async def get_knowledge_list_by_company(cls, company_code: int) -> dict:
         """
-        [요구사항 반영 정정] 
         인증된 company_code를 추적하여
         knowledge 테이블에 등록된 원본 문서 마스터 전체 리스트를 조회합니다.
         """
         supabase = get_supabase()
-        
-        # 주신 사양에 맞춰 knowledge 테이블에서 해당 회사의 모든 원본 서류 목록을 최신순 스캔
+
         res = supabase.table("knowledge") \
-            .select("code, company_code, source_type, source_code, source_url, title, total_token, reg_date") \
+            .select("code, company_code, title, file_path, file_name, orig_name, file_size, file_ext, token, reg_date") \
             .eq("company_code", company_code) \
             .order("code", desc=True) \
             .execute()
-            
+
         return {
             "success": True,
             "total_count": len(res.data) if res.data else 0,
             "data": res.data if res.data else []
+        }
+
+    @classmethod
+    async def delete_document(cls, company_code: int, code: int) -> dict:
+        """
+        [변경] 더 이상 source_type/source_code 개념이 없으므로
+        knowledge.code(PK) + company_code 기준으로 단건 삭제하며,
+        연결된 물리 파일도 함께 정리합니다. (knowledge_data는 FK CASCADE로 자동 삭제)
+        """
+        supabase = get_supabase()
+
+        target = supabase.table("knowledge") \
+            .select("code, file_path, file_name") \
+            .eq("company_code", company_code) \
+            .eq("code", code) \
+            .execute()
+
+        if not target.data:
+            raise HTTPException(status_code=404, detail="삭제할 문서를 찾을 수 없습니다.")
+
+        row = target.data[0]
+        # DB의 file_path는 UPLOAD_ROOT(/user)가 빠진 상태(예: /1)로 저장되어 있으므로 다시 결합
+        full_path = os.path.join(settings.UPLOAD_ROOT, row["file_path"].lstrip("/"), row["file_name"])
+
+        res = supabase.table("knowledge").delete() \
+            .eq("company_code", company_code) \
+            .eq("code", code).execute()
+
+        if os.path.exists(full_path):
+            os.remove(full_path)
+
+        return {
+            "success": True,
+            "message": "해당 문서 마스터 및 하위 청크 벡터 데이터 전체가 정상 삭제되었습니다.",
+            "deleted_master_count": len(res.data) if res.data else 0
         }

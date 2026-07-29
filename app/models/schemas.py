@@ -1,4 +1,4 @@
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel
 from typing import Optional, List
 
 # [신규 추가] API Key 단독 기반 조회 요청 스키마
@@ -60,18 +60,15 @@ class CompanyListResponse(BaseModel):
     limit: int
     data: List[CompanyInfoResponse]
 
-# 문서 등록 요청/응답 스키마
-class DocumentKnowledgeRequest(BaseModel):
-    source_type: str         # FILE, URL, TEXT 등
-    source_code: str         # 웹서버 attachment.code 등 (원본 문서 식별용)
-    source_url: HttpUrl      # 다운로드 가능한 파일의 전체 URL
-    title: str               # 문서 제목 또는 파일명
-
+# 문서 등록 응답 스키마
+# (요청은 파일 업로드(UploadFile) + title(Form)로 받으므로 별도의 JSON Request 모델은 사용하지 않음)
 class DocumentKnowledgeResponse(BaseModel):
     success: bool
     message: str
     company_code: int
     knowledge_code: int
+    file_name: str            # 서버에 저장된(치환된) 파일명
+    orig_name: str             # 업로드 당시 원본 파일명
     total_chunks: int
 
 # app/models/schemas.py 최하단에 추가
@@ -80,11 +77,13 @@ class DocumentKnowledgeResponse(BaseModel):
 class KnowledgeMasterResponse(BaseModel):
     code: int
     company_code: int
-    source_type: str         # FILE, URL, TEXT 등
-    source_code: str         # 웹서버의 문서 키값
-    source_url: Optional[str] = None
-    title: str               # 파일명 또는 제목
-    total_token: int         # 학습된 청크들의 총 토큰 합
+    title: str                # 문서 제목
+    file_path: str            # 저장 디렉터리 (UPLOAD_ROOT(/user) 제외, 예: /1)
+    file_name: str            # 서버 저장 파일명
+    orig_name: str             # 업로드 당시 원본 파일명
+    file_size: int             # 파일 용량(byte)
+    file_ext: str               # 확장자 (예: pdf, docx, xlsx)
+    token: int                  # 학습된 청크들의 총 토큰 합
     reg_date: str       # 대한민국 서울 시간 기준 가입 일시    
 
 # 지식 마스터 문서 목록 전체 응답 표준
