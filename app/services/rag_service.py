@@ -11,7 +11,7 @@ from google.genai import types
 
 from app.config import settings
 from app.database import get_supabase
-from app.ai import get_ai_client, EMBEDDING_MODEL
+from app.ai import get_ai_client, EMBEDDING_MODEL, call_gemini_with_retry
 
 ai_client = get_ai_client()
 logger = logging.getLogger("rag_service")
@@ -167,16 +167,17 @@ class RAGService:
         if chunks_payload:
             try:
                 texts_to_embed = [c["content"] for c in chunks_payload]
-                embed_response = ai_client.models.embed_content(
+                # [변경] 503(과부하) 등 일시적 오류 시 자동 재시도
+                embed_response = call_gemini_with_retry(lambda: ai_client.models.embed_content(
                     model=EMBEDDING_MODEL,
                     contents=texts_to_embed,
                     config=types.EmbedContentConfig(output_dimensionality=768)
-                )
+                ))
                 for idx, embedding_data in enumerate(embed_response.embeddings):
                     chunks_payload[idx]["embedding"] = embedding_data.values
                     chunks_payload[idx]["embedding_model"] = EMBEDDING_MODEL
             except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Gemini 임베딩 생성 오류: {str(e)}")
+                raise HTTPException(status_code=503, detail=f"Gemini 임베딩 생성 오류(일시적 서버 과부하일 수 있습니다. 잠시 후 다시 시도해주세요): {str(e)}")
 
             supabase.table("knowledge_data").insert(chunks_payload).execute()
 
