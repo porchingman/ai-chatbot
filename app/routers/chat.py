@@ -17,6 +17,7 @@ async def ask_question(
     return ChatResponse(
         success=True,
         answer=result["answer"],
+        references=result["references"],
         input_token=result["input_token"],
         output_token=result["output_token"],
         total_token=result["total_token"],

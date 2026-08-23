@@ -138,6 +138,54 @@ class RAGService:
         }
 
     @classmethod
+    def _chunk_and_embed_and_save(cls, supabase, company_code: int, knowledge_code: int, pages: list[dict]) -> int:
+        """
+        [공통 헬퍼] 페이지/블록 단위 텍스트 리스트를 받아
+        청킹 → Gemini 임베딩 → knowledge_data insert → knowledge.token 갱신까지 처리합니다.
+        파일 등록(process_and_save_document), 게시판 등록(register_board_document)에서 공용으로 사용합니다.
+        반환값: 생성된 총 청크 개수
+        """
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+
+        chunks_payload = []
+        chunk_no = 1
+
+        for page_data in pages:
+            split_texts = text_splitter.split_text(page_data["text"])
+            for text_chunk in split_texts:
+                chunks_payload.append({
+                    "knowledge_code": knowledge_code,
+                    "company_code": company_code,
+                    "content": text_chunk,
+                    "chunk_no": chunk_no,
+                    "page_no": page_data["page_no"],
+                    "token": len(text_chunk)
+                })
+                chunk_no += 1
+
+        if chunks_payload:
+            try:
+                texts_to_embed = [c["content"] for c in chunks_payload]
+                embed_response = ai_client.models.embed_content(
+                    model=EMBEDDING_MODEL,
+                    contents=texts_to_embed,
+                    config=types.EmbedContentConfig(output_dimensionality=768)
+                )
+                for idx, embedding_data in enumerate(embed_response.embeddings):
+                    chunks_payload[idx]["embedding"] = embedding_data.values
+                    chunks_payload[idx]["embedding_model"] = EMBEDDING_MODEL
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Gemini 임베딩 생성 오류: {str(e)}")
+
+            supabase.table("knowledge_data").insert(chunks_payload).execute()
+
+        total_calculated_tokens = sum([c["token"] for c in chunks_payload])
+        supabase.table("knowledge").update({"token": total_calculated_tokens}).eq("code", knowledge_code).execute()
+
+        return len(chunks_payload)
+
+    @classmethod
     async def process_and_save_document(cls, company_code: int, upload_file: UploadFile, title: str) -> dict:
         """
         [변경] 웹서버단에서 파일 업로드가 오면
@@ -155,6 +203,7 @@ class RAGService:
         master_data = {
             "company_code": company_code,
             "title": title,
+            "source_type": "file",
             "file_path": saved["file_path"],
             "file_name": saved["file_name"],
             "orig_name": saved["orig_name"],
@@ -167,49 +216,13 @@ class RAGService:
             raise HTTPException(status_code=500, detail="마스터 문서 정보 생성 실패")
 
         knowledge_code = master_insert.data[0]["code"]
-        chunks_payload = []
 
         try:
             # 3) 저장된 로컬 파일을 읽어 텍스트 추출
             pages = cls.extract_text_from_local_file(saved["full_path"], "." + saved["file_ext"])
 
-            # 4) 청킹 스플리터 가동
-            from langchain_text_splitters import RecursiveCharacterTextSplitter
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-
-            chunk_no = 1
-            for page_data in pages:
-                split_texts = text_splitter.split_text(page_data["text"])
-                for text_chunk in split_texts:
-                    chunks_payload.append({
-                        "knowledge_code": knowledge_code,
-                        "company_code": company_code,
-                        "content": text_chunk,
-                        "chunk_no": chunk_no,
-                        "page_no": page_data["page_no"],
-                        "token": len(text_chunk)
-                    })
-                    chunk_no += 1
-
-            # 5) Gemini 임베딩 생성 (768차원 최신 제한 옵션 일치)
-            if chunks_payload:
-                try:
-                    texts_to_embed = [c["content"] for c in chunks_payload]
-                    embed_response = ai_client.models.embed_content(
-                        model=EMBEDDING_MODEL,
-                        contents=texts_to_embed,
-                        config=types.EmbedContentConfig(output_dimensionality=768)
-                    )
-                    for idx, embedding_data in enumerate(embed_response.embeddings):
-                        chunks_payload[idx]["embedding"] = embedding_data.values
-                        chunks_payload[idx]["embedding_model"] = EMBEDDING_MODEL
-                except Exception as e:
-                    raise HTTPException(status_code=500, detail=f"Gemini 임베딩 생성 오류: {str(e)}")
-
-                supabase.table("knowledge_data").insert(chunks_payload).execute()
-
-            total_calculated_tokens = sum([c["token"] for c in chunks_payload])
-            supabase.table("knowledge").update({"token": total_calculated_tokens}).eq("code", knowledge_code).execute()
+            # 4) 공통 헬퍼로 청킹/임베딩/저장
+            total_chunks = cls._chunk_and_embed_and_save(supabase, company_code, knowledge_code, pages)
 
         except Exception:
             # 실패 시 트랜잭션 복구 안전장치: 마스터 row 및 저장된 물리 파일 함께 정리
@@ -222,7 +235,103 @@ class RAGService:
             "knowledge_code": knowledge_code,
             "file_name": saved["file_name"],
             "orig_name": saved["orig_name"],
-            "total_chunks": len(chunks_payload)
+            "total_chunks": total_chunks
+        }
+
+    @classmethod
+    async def register_board_document(cls, company_code: int, board_category: str, board_id: int, title: str, content: str) -> dict:
+        """
+        [신규] 그누보드 게시글(board_category + board_id)의 제목/본문을 학습합니다.
+        - 이미 같은 (company_code, board_category, board_id) 조합으로 등록된 문서가 있으면
+          기존 마스터/청크를 전부 삭제하고 새 내용으로 재등록합니다. (수정 시 최신화 = upsert)
+        - 물리 파일이 없으므로 file_* 컬럼은 빈 값으로 채웁니다.
+        """
+        if not content or not content.strip():
+            raise HTTPException(status_code=400, detail="학습할 본문 내용이 비어 있습니다.")
+
+        supabase = get_supabase()
+
+        # 1) 기존 등록 여부 확인 → 있으면 선삭제 (knowledge_data는 FK CASCADE로 자동 삭제)
+        existing = supabase.table("knowledge") \
+            .select("code") \
+            .eq("company_code", company_code) \
+            .eq("source_type", "board") \
+            .eq("board_category", board_category) \
+            .eq("board_id", board_id) \
+            .execute()
+
+        if existing.data:
+            old_code = existing.data[0]["code"]
+            supabase.table("knowledge").delete().eq("code", old_code).execute()
+
+        # 2) knowledge 마스터 신규 저장
+        master_data = {
+            "company_code": company_code,
+            "title": title,
+            "source_type": "board",
+            "board_category": board_category,
+            "board_id": board_id,
+            "file_path": "",
+            "file_name": "",
+            "orig_name": "",
+            "file_size": 0,
+            "file_ext": "txt",
+            "token": 0,
+        }
+        master_insert = supabase.table("knowledge").insert(master_data).execute()
+        if not master_insert.data:
+            raise HTTPException(status_code=500, detail="게시판 문서 정보 생성 실패")
+
+        knowledge_code = master_insert.data[0]["code"]
+
+        try:
+            # 3) 본문을 단일 페이지로 취급해 공통 헬퍼로 청킹/임베딩/저장
+            #    (제목도 검색 정확도를 위해 본문 맨 앞에 함께 포함)
+            full_text = f"[제목: {title}]\n{content.strip()}"
+            pages = [{"page_no": 1, "text": full_text}]
+            total_chunks = cls._chunk_and_embed_and_save(supabase, company_code, knowledge_code, pages)
+        except Exception:
+            supabase.table("knowledge").delete().eq("code", knowledge_code).execute()
+            raise
+
+        return {
+            "knowledge_code": knowledge_code,
+            "board_category": board_category,
+            "board_id": board_id,
+            "total_chunks": total_chunks
+        }
+
+    @classmethod
+    async def delete_board_document(cls, company_code: int, board_category: str, board_id: int) -> dict:
+        """
+        [신규] 게시글 삭제 시 호출. (company_code, board_category, board_id) 기준으로
+        knowledge 마스터를 삭제하며, 하위 knowledge_data는 FK CASCADE로 자동 삭제됩니다.
+        해당 게시글이 애초에 학습된 적 없어도(존재하지 않아도) 에러 없이 정상 종료합니다.
+        """
+        supabase = get_supabase()
+
+        target = supabase.table("knowledge") \
+            .select("code") \
+            .eq("company_code", company_code) \
+            .eq("source_type", "board") \
+            .eq("board_category", board_category) \
+            .eq("board_id", board_id) \
+            .execute()
+
+        if not target.data:
+            return {
+                "success": True,
+                "message": "학습된 게시글 데이터가 없어 별도 삭제 없이 종료합니다.",
+                "deleted_master_count": 0
+            }
+
+        knowledge_code = target.data[0]["code"]
+        res = supabase.table("knowledge").delete().eq("code", knowledge_code).execute()
+
+        return {
+            "success": True,
+            "message": "게시글 학습 데이터가 정상 삭제되었습니다.",
+            "deleted_master_count": len(res.data) if res.data else 0
         }
 
     @classmethod
@@ -248,20 +357,20 @@ class RAGService:
     @classmethod
     async def get_download_target(cls, company_code: int, code: int) -> dict:
         """
-        다운로드 요청 시 해당 company_code 소유의 문서가 맞는지 검증하고,
+        [신규] 다운로드 요청 시 해당 company_code 소유의 문서가 맞는지 검증하고,
         실제 물리 파일 경로(UPLOAD_ROOT + file_path + file_name)와 원본 파일명을 반환합니다.
         """
         supabase = get_supabase()
- 
+
         target = supabase.table("knowledge") \
             .select("code, file_path, file_name, orig_name") \
             .eq("company_code", company_code) \
             .eq("code", code) \
             .execute()
- 
+
         if not target.data:
             raise HTTPException(status_code=404, detail="요청하신 문서 정보를 찾을 수 없습니다.")
- 
+
         row = target.data[0]
         # DB의 file_path는 UPLOAD_ROOT(/user)가 빠진 상태(예: /1)로 저장되어 있으므로 다시 결합
         full_path = os.path.join(settings.UPLOAD_ROOT, row["file_path"].lstrip("/"), row["file_name"])
@@ -277,11 +386,10 @@ class RAGService:
             code, company_code, settings.UPLOAD_ROOT, row["file_path"], row["file_name"],
             full_path, os.path.exists(full_path), dir_exists, dir_listing
         )
- 
- 
+
         if not os.path.exists(full_path):
             raise HTTPException(status_code=404, detail="물리 파일이 서버에 존재하지 않습니다. (재배포로 유실되었을 수 있습니다)")
- 
+
         return {
             "full_path": full_path,
             "orig_name": row["orig_name"],
@@ -306,15 +414,15 @@ class RAGService:
             raise HTTPException(status_code=404, detail="삭제할 문서를 찾을 수 없습니다.")
 
         row = target.data[0]
-        # DB의 file_path는 UPLOAD_ROOT(/user)가 빠진 상태(예: /1)로 저장되어 있으므로 다시 결합
-        full_path = os.path.join(settings.UPLOAD_ROOT, row["file_path"].lstrip("/"), row["file_name"])
-
         res = supabase.table("knowledge").delete() \
             .eq("company_code", company_code) \
             .eq("code", code).execute()
 
-        if os.path.exists(full_path):
-            os.remove(full_path)
+        # 게시판(source_type=BOARD) 문서는 물리 파일이 없으므로 file_name이 비어있음 → 삭제 스킵
+        if row.get("file_name"):
+            full_path = os.path.join(settings.UPLOAD_ROOT, row["file_path"].lstrip("/"), row["file_name"])
+            if os.path.exists(full_path):
+                os.remove(full_path)
 
         return {
             "success": True,

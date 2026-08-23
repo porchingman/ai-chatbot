@@ -92,6 +92,23 @@ class KnowledgeListResponse(BaseModel):
     total_count: int
     data: List[KnowledgeMasterResponse]
 
+# 게시판 글 학습 등록 요청/응답 스키마 (그누보드 연동용)
+class BoardKnowledgeRequest(BaseModel):
+    board_category: str             # 그누보드 게시판 테이블명 (예: case)
+    board_id: int                # 게시글 번호
+    title: str                # 게시글 제목
+    content: str              # 게시글 본문 (HTML 태그 제거된 순수 텍스트 권장)
+
+class BoardKnowledgeResponse(BaseModel):
+    success: bool
+    message: str
+    company_code: int
+    knowledge_code: int
+    board_category: str
+    board_id: int
+    total_chunks: int
+
+
 # 챗봇 질의응답 요청/응답 스키마
 class ChatRequest(BaseModel):
     member_code: str         # 대화 주체 식별 (메모리 관리용)
@@ -99,9 +116,20 @@ class ChatRequest(BaseModel):
     question: str            # 유저의 질문 내용
     ip: str                  # 로그용 IP 주소
 
+# 답변 생성에 참고한 유사 사례(게시글) 1건 정보
+# - AI 서버는 도메인/URL 구조를 모르므로 링크는 board_category + board_id만 내려주고
+#   실제 <a href="...">는 웹서버(PHP)에서 조립합니다.
+class ChatReference(BaseModel):
+    knowledge_code: int
+    title: str
+    board_category: Optional[str] = None
+    board_id: Optional[int] = None
+    similarity: float
+
 class ChatResponse(BaseModel):
     success: bool
     answer: str
+    references: List[ChatReference] = []   # 사례 기반 답변일 때 참고한 유사 게시글 목록 (없으면 빈 배열)
     input_token: int
     output_token: int
     total_token: int

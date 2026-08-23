@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import FileResponse
-from app.models.schemas import DocumentKnowledgeResponse, KnowledgeListResponse
+from app.models.schemas import DocumentKnowledgeResponse, KnowledgeListResponse, BoardKnowledgeRequest, BoardKnowledgeResponse
 from app.services.rag_service import RAGService
 from app.dependencies import verify_api_key  # 보안 의존성 추가
 
@@ -37,6 +37,42 @@ async def register_document(
         total_chunks=result["total_chunks"]
     )
 
+@router.post("/register-board", response_model=BoardKnowledgeResponse, summary="게시판 글 등록/수정 시 학습 (Upsert, 헤더 보안 적용)")
+async def register_board_document(
+    body: BoardKnowledgeRequest,
+    company_code: int = Depends(verify_api_key)
+):
+    """
+    그누보드 게시글(board_category + board_id) 등록/수정 시 웹서버가 호출합니다.
+    동일 (company_code, board_category, board_id) 조합의 기존 학습 데이터가 있으면 삭제 후 최신 내용으로 재등록합니다.
+    """
+    result = await RAGService.register_board_document(
+        company_code, body.board_category, body.board_id, body.title, body.content
+    )
+    return BoardKnowledgeResponse(
+        success=True,
+        message="게시글 학습(등록/수정)이 정상 완료되었습니다.",
+        company_code=company_code,
+        knowledge_code=result["knowledge_code"],
+        board_category=result["board_category"],
+        board_id=result["board_id"],
+        total_chunks=result["total_chunks"]
+    )
+
+
+@router.delete("/delete-board/{board_category}/{board_id}", summary="게시판 글 삭제 시 학습 데이터 동기화 삭제 (헤더 보안 적용)")
+async def delete_board_document(
+    board_category: str,
+    board_id: int,
+    company_code: int = Depends(verify_api_key)
+):
+    """
+    그누보드 게시글 삭제 시 웹서버가 호출합니다.
+    해당 게시글로 학습된 knowledge 마스터/청크 데이터를 삭제합니다. (학습 이력이 없어도 에러 없이 종료)
+    """
+    return await RAGService.delete_board_document(company_code, board_category, board_id)
+
+
 @router.get("/download/{code}", summary="knowledge 코드 기준 원본 파일 다운로드 (헤더 보안 적용)")
 async def download_document(
     code: int,
@@ -51,7 +87,8 @@ async def download_document(
         filename=target["orig_name"],   # 다운로드 시 사용자가 업로드했던 원본 파일명 그대로 노출
         media_type="application/octet-stream"
     )
- 
+
+
 @router.delete("/delete/{code}", summary="knowledge 코드 기준 단건 삭제 (헤더 보안 적용)")
 async def delete_document(
     code: int,
