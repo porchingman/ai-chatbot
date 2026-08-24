@@ -207,6 +207,8 @@ class ChatService:
         return {
             "answer": answer_text,
             "references": references,   # [신규] 참고한 유사 사례 목록 (board_category/board_id/similarity 포함)
+            "board_link": company_res.data.get("board_link"),
+            "inquiry_link": company_res.data.get("inquiry_link"),
             "input_token": input_token,
             "output_token": output_token,
             "total_token": total_token,

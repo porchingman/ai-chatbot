@@ -136,6 +136,8 @@ class ChatResponse(BaseModel):
     success: bool
     answer: str
     references: List[ChatReference] = []   # 사례 기반 답변일 때 참고한 유사 게시글 목록 (없으면 빈 배열)
+    board_link: Optional[str] = None
+    inquiry_link: Optional[str] = None
     input_token: int
     output_token: int
     total_token: int
