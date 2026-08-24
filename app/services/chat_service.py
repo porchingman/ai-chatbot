@@ -107,6 +107,8 @@ class ChatService:
         # 1. 회사 정보 및 프롬프트 검증
         company_res = supabase.table("company").select("prompt").eq("code", company_code).single().execute()
         system_prompt = company_res.data.get("prompt") if company_res.data else "당신은 친절한 AI 어시스턴트입니다."
+        board_link = company_res.data.get("board_link") if company_res.data else ""
+        inquiry_link = company_res.data.get("inquiry_link") if company_res.data else ""
 
         # 2. 질문에 대한 유저 벡터 생성 (통합 클라이언트 채널 사용)
         #    [변경] 503(과부하) 등 일시적 오류 시 자동 재시도
@@ -207,8 +209,8 @@ class ChatService:
         return {
             "answer": answer_text,
             "references": references,   # [신규] 참고한 유사 사례 목록 (board_category/board_id/similarity 포함)
-            "board_link": company_res.data.get("board_link"),
-            "inquiry_link": company_res.data.get("inquiry_link"),
+            "board_link": board_link,
+            "inquiry_link": inquiry_link,
             "input_token": input_token,
             "output_token": output_token,
             "total_token": total_token,
