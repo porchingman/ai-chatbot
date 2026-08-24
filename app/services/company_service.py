@@ -29,6 +29,8 @@ class CompanyService:
             "api_key": req.api_key,
             "prompt": req.prompt,
             "greetings": req.greetings,
+            "board_link": req.board_link,
+            "inquiry_link": req.inquiry_link,
             "status": req.status
         }
         
@@ -138,6 +140,14 @@ class CompanyService:
         # 인사말 처리
         if req.greetings is not None:
             update_data["greetings"] = req.greetings
+
+        # 게시판 링크 처리
+        if req.board_link is not None:
+            update_data["board_link"] = req.board_link
+
+        # 문의 링크 처리
+        if req.inquiry_link is not None:
+            update_data["inquiry_link"] = req.inquiry_link            
 
         # 기존 상태 제어 및 도메인 유효성 체크
         if req.status is not None:

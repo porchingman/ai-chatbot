@@ -12,6 +12,8 @@ class CompanyCreateRequest(BaseModel):
     api_key: str             # 웹서버 인증용 API KEY
     prompt: Optional[str] = "당신은 친절한 AI 어시스턴트입니다."
     greetings: Optional[str] = "안녕하세요! 무엇을 도와드릴까요?"
+    board_link: Optional[str] = None  # 고객사 게시판 링크 (예: https://example.com/bbs/board.php?bo_table=#board_category&wr_id=#board_id)
+    inquiry_link: Optional[str] = None  # 고객사 문의 링크 (예: http://example.com/bbs/bbs/write.php?bo_table=online&me_code=4010)
     status: Optional[str] = "ready"  # 초기 상태는 'ready'로 설정 (active, ready, withdrawal)
 
 # 고객사 정보 수정 요청
@@ -21,6 +23,8 @@ class CompanyUpdateRequest(BaseModel):
     api_key: Optional[str] = None    # 변경할 신규 API KEY (선택)
     prompt: Optional[str] = None     # 시스템 프롬프트 (선택)
     greetings: Optional[str] = None  # 인사말 (선택)
+    board_link: Optional[str] = None  # 고객사 게시판 링크 (선택)
+    inquiry_link: Optional[str] = None  # 고객사 문의 링크 (선택)
     status: Optional[str] = None     # active, ready, withdrawal (선택)
 
 # 고객사 정보 응답 표준
@@ -31,6 +35,8 @@ class CompanyInfoResponse(BaseModel):
     api_key: str
     prompt: Optional[str]
     greetings: Optional[str]
+    board_link: Optional[str]
+    inquiry_link: Optional[str]
     status: str
     total_input_token: int
     total_output_token: int
