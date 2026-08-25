@@ -90,7 +90,8 @@ class KnowledgeMasterResponse(BaseModel):
     file_size: int             # 파일 용량(byte)
     file_ext: str               # 확장자 (예: pdf, docx, xlsx)
     token: int                  # 학습된 청크들의 총 토큰 합
-    reg_date: str       # 대한민국 서울 시간 기준 가입 일시    
+    reg_date: str           # 대한민국 서울 시간 기준 가입 일시
+    source_type: str            # 'file' | 'board'
 
 # 지식 마스터 문서 목록 전체 응답 표준
 class KnowledgeListResponse(BaseModel):
