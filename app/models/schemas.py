@@ -98,6 +98,23 @@ class KnowledgeListResponse(BaseModel):
     total_count: int
     data: List[KnowledgeMasterResponse]
 
+# 지식 마스터 문서 상세보기 응답 (content 원문 포함)
+class KnowledgeDetailResponse(BaseModel):
+    code: int
+    company_code: int
+    title: str
+    source_type: str                      # 'file' | 'board'
+    board_category: Optional[str] = None
+    board_id: Optional[int] = None
+    content: Optional[str] = None         # 게시판 학습 시 저장된 본문 원문 (파일 학습은 빈 값일 수 있음)
+    file_path: str
+    file_name: str
+    orig_name: str
+    file_size: int
+    file_ext: str
+    token: int
+    reg_date: str    
+
 # 게시판 글 학습 등록 요청/응답 스키마 (그누보드 연동용)
 class BoardKnowledgeRequest(BaseModel):
     board_category: str             # 그누보드 게시판 테이블명 (예: case)

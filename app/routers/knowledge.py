@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import FileResponse
-from app.models.schemas import DocumentKnowledgeResponse, KnowledgeListResponse, BoardKnowledgeRequest, BoardKnowledgeResponse
+from app.models.schemas import DocumentKnowledgeResponse, KnowledgeListResponse, KnowledgeDetailResponse, BoardKnowledgeRequest, BoardKnowledgeResponse
 from app.services.rag_service import RAGService
 from app.dependencies import verify_api_key  # 보안 의존성 추가
 
@@ -14,6 +14,18 @@ async def get_knowledge_list(
     HTTP 헤더 인증 체계를 거쳐 해당 기업 고객이 현재까지 학습 완료한 '원본 문서(knowledge)' 전체 목록을 반환합니다.
     """
     return await RAGService.get_knowledge_list_by_company(company_code)
+
+
+@router.get("/detail/{code}", response_model=KnowledgeDetailResponse, summary="[어드민/SaaS] knowledge 코드 기준 상세보기 (본문 content 포함, 헤더 보안 적용)")
+async def get_knowledge_detail(
+    code: int,
+    company_code: int = Depends(verify_api_key)
+):
+    """
+    보안 인증된 고객사 소유의 문서(knowledge.code 기준) 상세 정보를 조회합니다.
+    게시판(source_type='board')으로 학습된 문서는 content에 학습된 본문 원문이 그대로 담겨 있습니다.
+    """
+    return await RAGService.get_knowledge_detail(company_code, code)
 
 
 @router.post("/register", response_model=DocumentKnowledgeResponse, summary="문서 등록 (파일 업로드 방식, 헤더 보안 적용)")

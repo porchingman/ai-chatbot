@@ -265,13 +265,14 @@ class RAGService:
             old_code = existing.data[0]["code"]
             supabase.table("knowledge").delete().eq("code", old_code).execute()
 
-        # 2) knowledge 마스터 신규 저장
+        # 2) knowledge 마스터 신규 저장 (content 컬럼에 게시글 본문 원문 저장 - 상세보기용)
         master_data = {
             "company_code": company_code,
             "title": title,
             "source_type": "board",
             "board_category": board_category,
             "board_id": board_id,
+            "content": content.strip(),   # [신규] 게시판 본문 원문 저장 (상세보기 API에서 그대로 조회)
             "file_path": "",
             "file_name": "",
             "orig_name": "",
@@ -354,6 +355,27 @@ class RAGService:
             "total_count": len(res.data) if res.data else 0,
             "data": res.data if res.data else []
         }
+
+    @classmethod
+    async def get_knowledge_detail(cls, company_code: int, code: int) -> dict:
+        """
+        [신규] knowledge.code 기준 단건 상세 조회 (content 원문 포함).
+        목록(get_knowledge_list_by_company)은 응답 크기 최적화를 위해 content를 제외하지만,
+        상세보기는 실제 학습된 본문(content)까지 그대로 반환합니다.
+        """
+        supabase = get_supabase()
+
+        res = supabase.table("knowledge") \
+            .select("code, company_code, title, source_type, board_category, board_id, "
+                    "content, file_path, file_name, orig_name, file_size, file_ext, token, reg_date") \
+            .eq("company_code", company_code) \
+            .eq("code", code) \
+            .execute()
+
+        if not res.data:
+            raise HTTPException(status_code=404, detail="요청하신 문서 정보를 찾을 수 없습니다.")
+
+        return res.data[0]
 
     @classmethod
     async def get_download_target(cls, company_code: int, code: int) -> dict:

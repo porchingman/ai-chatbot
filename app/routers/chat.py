@@ -20,8 +20,6 @@ async def ask_question(
         references=result["references"],
         board_link=result["board_link"],
         inquiry_link=result["inquiry_link"],
-        #board_link=result.get("board_link"),
-        #inquiry_link=result.get("inquiry_link"),
         input_token=result["input_token"],
         output_token=result["output_token"],
         total_token=result["total_token"],
