@@ -345,7 +345,7 @@ class RAGService:
         supabase = get_supabase()
 
         res = supabase.table("knowledge") \
-            .select("code, company_code, title, file_path, file_name, orig_name, file_size, file_ext, token, reg_date") \
+            .select("code, company_code, title, file_path, file_name, orig_name, file_size, file_ext, token, reg_date, source_type") \
             .eq("company_code", company_code) \
             .order("code", desc=True) \
             .execute()
