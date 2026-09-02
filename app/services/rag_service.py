@@ -1,5 +1,7 @@
 import io
 import os
+import re
+import html as html_lib
 import uuid
 import logging
 from pypdf import PdfReader
@@ -239,6 +241,41 @@ class RAGService:
             "total_chunks": total_chunks
         }
 
+    @staticmethod
+    def strip_html_tags(raw_html: str) -> str:
+        """
+        [신규] 게시판 본문(HTML)에서 태그를 제거하고 순수 텍스트만 남긴다.
+        - <br>, </p>, </div>, </li> 등 줄바꿈 의미를 가진 블록/개행 태그는 먼저 \n으로 치환하여
+          문장 구조(줄바꿈)가 사라지지 않도록 한다.
+        - 이후 남은 모든 태그(<script>, <style> 내용 포함)를 제거한다.
+        - &nbsp;, &amp; 같은 HTML 엔티티는 실제 문자로 복원한다.
+        - 연속 공백/개행은 보기 좋게 정리한다.
+        """
+        if not raw_html:
+            return ""
+
+        text = raw_html
+
+        # 1) <script>...</script>, <style>...</style> 내용은 통째로 제거 (내용까지 학습되면 안 되므로)
+        text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+
+        # 2) 줄바꿈 의미를 갖는 태그를 \n으로 치환 (내용이 한 줄로 뭉쳐지는 것 방지)
+        text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"</(p|div|li|tr|h[1-6])>", "\n", text, flags=re.IGNORECASE)
+
+        # 3) 남은 모든 HTML 태그 제거
+        text = re.sub(r"<[^>]+>", "", text)
+
+        # 4) HTML 엔티티(&nbsp; &amp; &lt; 등) 실제 문자로 복원
+        text = html_lib.unescape(text)
+
+        # 5) 공백/개행 정리 (연속 공백 1칸, 연속 개행 2줄까지만 허용)
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = "\n".join(line.strip() for line in text.split("\n"))
+
+        return text.strip()
+
     @classmethod
     async def register_board_document(cls, company_code: int, board_category: str, board_id: int, title: str, content: str) -> dict:
         """
@@ -251,6 +288,14 @@ class RAGService:
             raise HTTPException(status_code=400, detail="학습할 본문 내용이 비어 있습니다.")
 
         supabase = get_supabase()
+
+        # [변경] HTML 태그 제거 (PHP 웹단에서 이미 strip_tags를 거쳐 넘어오더라도,
+        #        누락되었을 경우를 대비해 AI 서버에서도 한 번 더 정제한다 - 이중 안전장치)
+        clean_content = cls.strip_html_tags(content)
+        clean_title = cls.strip_html_tags(title)
+
+        if not clean_content:
+            raise HTTPException(status_code=400, detail="HTML 태그 제거 후 학습할 본문 내용이 남아있지 않습니다.")
 
         # 1) 기존 등록 여부 확인 → 있으면 선삭제 (knowledge_data는 FK CASCADE로 자동 삭제)
         existing = supabase.table("knowledge") \
@@ -265,14 +310,14 @@ class RAGService:
             old_code = existing.data[0]["code"]
             supabase.table("knowledge").delete().eq("code", old_code).execute()
 
-        # 2) knowledge 마스터 신규 저장 (content 컬럼에 게시글 본문 원문 저장 - 상세보기용)
+        # 2) knowledge 마스터 신규 저장 (content 컬럼에 HTML 태그가 제거된 게시글 본문 저장 - 상세보기용)
         master_data = {
             "company_code": company_code,
-            "title": title,
+            "title": clean_title,
             "source_type": "board",
             "board_category": board_category,
             "board_id": board_id,
-            "content": content.strip(),   # [신규] 게시판 본문 원문 저장 (상세보기 API에서 그대로 조회)
+            "content": clean_content,   # [변경] HTML 태그 제거된 순수 텍스트만 저장
             "file_path": "",
             "file_name": "",
             "orig_name": "",
@@ -288,8 +333,8 @@ class RAGService:
 
         try:
             # 3) 본문을 단일 페이지로 취급해 공통 헬퍼로 청킹/임베딩/저장
-            #    (제목도 검색 정확도를 위해 본문 맨 앞에 함께 포함)
-            full_text = f"[제목: {title}]\n{content.strip()}"
+            #    (제목도 검색 정확도를 위해 본문 맨 앞에 함께 포함 / 둘 다 HTML 태그 제거된 값 사용)
+            full_text = f"[제목: {clean_title}]\n{clean_content}"
             pages = [{"page_no": 1, "text": full_text}]
             total_chunks = cls._chunk_and_embed_and_save(supabase, company_code, knowledge_code, pages)
         except Exception:
@@ -345,7 +390,7 @@ class RAGService:
         supabase = get_supabase()
 
         res = supabase.table("knowledge") \
-            .select("code, company_code, title, file_path, file_name, orig_name, file_size, file_ext, token, reg_date, source_type") \
+            .select("code, company_code, title, file_path, file_name, orig_name, file_size, file_ext, token, reg_date") \
             .eq("company_code", company_code) \
             .order("code", desc=True) \
             .execute()
