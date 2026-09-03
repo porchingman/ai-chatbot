@@ -99,8 +99,38 @@ class ChatService:
             # (3) 일반 정보(회사소개 등)만 있는 경우
             return "\n\n제공된 참고 정보에 기반하여 자연스럽고 친절하게 답변하세요."
 
+    @staticmethod
+    def save_chat_log_and_stats(supabase, company_code: int, req, answer_text: str, input_token: int, output_token: int, total_token: int, response_time_ms: int):
+        """
+        [변경-속도개선] 대화 로그 저장 + 통계 누적 업데이트(총 3회의 Supabase 호출)를
+        응답 반환 전에 동기적으로 기다리지 않도록 별도 메서드로 분리했습니다.
+        FastAPI의 BackgroundTasks에 등록되어 "응답을 사용자에게 반환한 뒤" 실행되므로,
+        사용자가 체감하는 대기 시간에는 영향을 주지 않습니다.
+        """
+        history_data = {
+            "company_code": company_code,
+            "member_code": req.member_code,
+            "conversation_id": req.conversation_id,
+            "question": req.question,
+            "answer": answer_text,
+            "input_token": input_token,
+            "output_token": output_token,
+            "token": total_token,
+            "response_time": response_time_ms,
+            "ip": req.ip
+        }
+        supabase.table("chat_history").insert(history_data).execute()
+
+        comp_stats = supabase.table("company").select("total_input_token", "total_output_token", "total_token", "total_question").eq("code", company_code).execute().data[0]
+        supabase.table("company").update({
+            "total_input_token": comp_stats["total_input_token"] + input_token,
+            "total_output_token": comp_stats["total_output_token"] + output_token,
+            "total_token": comp_stats["total_token"] + total_token,
+            "total_question": comp_stats["total_question"] + 1
+        }).eq("code", company_code).execute()
+
     @classmethod
-    async def process_chat(cls, company_code: int, req) -> dict: # company_code 전면 배치
+    async def process_chat(cls, company_code: int, req, background_tasks=None) -> dict: # company_code 전면 배치
         start_time = time.time()
         supabase = get_supabase()
 
@@ -165,47 +195,39 @@ class ChatService:
 
         # 6. Gemini 1.5 Flash 응답 생성 (v1beta 명칭 보정으로 404 에러 원천 차단)
         #    [변경] 503(과부하) 등 일시적 오류 시 자동 재시도
+        #    [변경-속도개선] gemini-2.5-flash는 기본적으로 "thinking(추론)" 모드가 켜져 있어
+        #      질문당 수 초의 추론 시간이 추가로 소요됩니다. 이미 컨텍스트가 주어진 RAG 질의응답에는
+        #      깊은 추론이 크게 필요 없으므로 thinking_budget=0으로 비활성화해 응답 속도를 크게 개선합니다.
         try:
             chat_response = call_gemini_with_retry(lambda: ai_client.models.generate_content(
                 model=CHAT_MODEL,
                 contents=contents_payload,
                 config=types.GenerateContentConfig(
                     system_instruction=final_system_instruction, 
-                    temperature=0.3
+                    temperature=0.3,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    max_output_tokens=512,   # [변경-속도개선] 간결한 사례 중심 답변에 맞춰 상한선 축소 (5~7문장 목표)
                 ),
             ))
             answer_text = chat_response.text
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"답변 생성 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해주세요. ({str(e)})")
 
-        # 7. 통계치 가공 및 로그 로직
+        # 7. 통계치 가공
         input_token = chat_response.usage_metadata.prompt_token_count if chat_response.usage_metadata else len(req.question)
         output_token = chat_response.usage_metadata.candidates_token_count if chat_response.usage_metadata else len(answer_text)
         total_token = input_token + output_token
         response_time_ms = int((time.time() - start_time) * 1000)
 
-        # 8. 로그 적재 및 통계 증분 업데이트
-        history_data = {
-            "company_code": company_code,
-            "member_code": req.member_code,
-            "conversation_id": req.conversation_id,
-            "question": req.question,
-            "answer": answer_text,
-            "input_token": input_token,
-            "output_token": output_token,
-            "token": total_token,
-            "response_time": response_time_ms,
-            "ip": req.ip
-        }
-        supabase.table("chat_history").insert(history_data).execute()
-
-        comp_stats = supabase.table("company").select("total_input_token", "total_output_token", "total_token", "total_question").eq("code", company_code).execute().data[0]
-        supabase.table("company").update({
-            "total_input_token": comp_stats["total_input_token"] + input_token,
-            "total_output_token": comp_stats["total_output_token"] + output_token,
-            "total_token": comp_stats["total_token"] + total_token,
-            "total_question": comp_stats["total_question"] + 1
-        }).eq("code", company_code).execute()
+        # 8. [변경-속도개선] 로그 적재 및 통계 업데이트는 응답 반환을 막지 않도록 백그라운드로 위임
+        #    (background_tasks가 주어지지 않은 경우 - 예: 단위 테스트 등 - 는 기존처럼 즉시 처리)
+        if background_tasks is not None:
+            background_tasks.add_task(
+                cls.save_chat_log_and_stats,
+                supabase, company_code, req, answer_text, input_token, output_token, total_token, response_time_ms
+            )
+        else:
+            cls.save_chat_log_and_stats(supabase, company_code, req, answer_text, input_token, output_token, total_token, response_time_ms)
 
         return {
             "answer": answer_text,
