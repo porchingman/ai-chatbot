@@ -1,4 +1,5 @@
 import time
+import json
 from fastapi import HTTPException
 from google.genai import types
 
@@ -130,8 +131,12 @@ class ChatService:
         }).eq("code", company_code).execute()
 
     @classmethod
-    async def process_chat(cls, company_code: int, req, background_tasks=None) -> dict: # company_code 전면 배치
-        start_time = time.time()
+    async def _prepare_context(cls, company_code: int, req) -> dict:
+        """
+        [신규 - 스트리밍 지원을 위한 리팩토링] 기존 1~5단계(회사정보 조회 → 임베딩 → 벡터검색 →
+        사례 그룹핑 → 프롬프트 조립)를 공용 헬퍼로 분리했습니다.
+        process_chat(비스트리밍)과 process_chat_stream(스트리밍) 양쪽에서 동일하게 재사용합니다.
+        """
         supabase = get_supabase()
 
         # 1. 회사 정보 및 프롬프트 검증
@@ -184,14 +189,25 @@ class ChatService:
                 contents_payload.append(types.Content(role="model", parts=[types.Part.from_text(text=chat["answer"])]))
 
         # 5. 프롬프트 시스템 지침 조립
-        #    [3단계 리팩토링] 순수 함수로 분리된 가이드라인 생성 로직 재사용
-        #      (1) 참고할 정보가 전혀 없을 때 → 근거 없는 추측(환각) 금지
-        #      (2) 사례(board) 컨텍스트가 있을 때 → 단정적 승패 예측 금지 + 답변 포맷 가이드
-        #      (3) 일반 정보(file)만 있을 때 → 기존과 동일하게 자연스럽게 답변
         knowledge_guideline = cls.build_knowledge_guideline(context_text, top_case_docs)
-
         final_system_instruction = f"{system_prompt}\n\n[지식 백그라운드]\n{context_text}{knowledge_guideline}"
         contents_payload.append(types.Content(role="user", parts=[types.Part.from_text(text=req.question)]))
+
+        return {
+            "supabase": supabase,
+            "contents_payload": contents_payload,
+            "final_system_instruction": final_system_instruction,
+            "references": references,
+            "board_link": board_link,
+            "inquiry_link": inquiry_link,
+        }
+
+    @classmethod
+    async def process_chat(cls, company_code: int, req, background_tasks=None) -> dict: # company_code 전면 배치
+        start_time = time.time()
+
+        ctx = await cls._prepare_context(company_code, req)
+        supabase = ctx["supabase"]
 
         # 6. Gemini 1.5 Flash 응답 생성 (v1beta 명칭 보정으로 404 에러 원천 차단)
         #    [변경] 503(과부하) 등 일시적 오류 시 자동 재시도
@@ -201,9 +217,9 @@ class ChatService:
         try:
             chat_response = call_gemini_with_retry(lambda: ai_client.models.generate_content(
                 model=CHAT_MODEL,
-                contents=contents_payload,
+                contents=ctx["contents_payload"],
                 config=types.GenerateContentConfig(
-                    system_instruction=final_system_instruction, 
+                    system_instruction=ctx["final_system_instruction"],
                     temperature=0.3,
                     thinking_config=types.ThinkingConfig(thinking_budget=0),
                     max_output_tokens=512,   # [변경-속도개선] 간결한 사례 중심 답변에 맞춰 상한선 축소 (5~7문장 목표)
@@ -231,11 +247,82 @@ class ChatService:
 
         return {
             "answer": answer_text,
-            "references": references,   # [신규] 참고한 유사 사례 목록 (board_category/board_id/similarity 포함)
-            "board_link": board_link,       # [신규] 회사 게시판 링크
-            "inquiry_link": inquiry_link,   # [신규] 회사 문의하기 링크
+            "references": ctx["references"],   # [신규] 참고한 유사 사례 목록 (board_category/board_id/similarity 포함)
+            "board_link": ctx["board_link"],       # [신규] 회사 게시판 링크
+            "inquiry_link": ctx["inquiry_link"],   # [신규] 회사 문의하기 링크
             "input_token": input_token,
             "output_token": output_token,
             "total_token": total_token,
             "response_time_ms": response_time_ms
         }
+
+    @classmethod
+    async def process_chat_stream(cls, company_code: int, req, background_tasks=None):
+        """
+        [신규 - 속도개선 핵심] Gemini의 실시간 스트리밍(generate_content_stream)을 그대로
+        클라이언트에 SSE(Server-Sent Events)로 흘려보낸다.
+
+        - 프론트가 "타이핑 효과 시작까지" 기다려야 하는 시간을,
+          '전체 답변 생성 완료'가 아니라 '첫 토큰 도착'까지로 크게 단축시키는 것이 핵심.
+        - 컨텍스트 준비(1~5단계: 회사정보/임베딩/벡터검색)는 스트리밍 시작 전에 동일하게 수행되며
+          (이 부분은 어차피 텍스트 생성 전에 끝나야 하는 필수 선행 작업이라 단축 불가),
+          그 이후 "생성" 구간만 토큰 단위로 즉시 전달한다.
+        - 스트림 마지막에 references/board_link/inquiry_link/토큰 통계를 담은 "done" 이벤트를 별도로 보낸다.
+        """
+        start_time = time.time()
+
+        ctx = await cls._prepare_context(company_code, req)
+        supabase = ctx["supabase"]
+
+        answer_text = ""
+        try:
+            # [주의] 스트리밍은 첫 청크를 꺼내는 시점에 실제 네트워크 요청이 발생하므로,
+            #        재시도(call_gemini_with_retry)는 "스트림 자체를 새로 여는 것"까지만 보장한다.
+            #        (이미 일부 텍스트를 클라이언트에 보낸 뒤 중간에 끊기는 경우는 재시도로 복구하지 않고
+            #         에러 이벤트로 알린 뒤 종료한다 - 부분 응답을 중복 전송하면 화면이 꼬이기 때문)
+            stream = call_gemini_with_retry(lambda: ai_client.models.generate_content_stream(
+                model=CHAT_MODEL,
+                contents=ctx["contents_payload"],
+                config=types.GenerateContentConfig(
+                    system_instruction=ctx["final_system_instruction"],
+                    temperature=0.3,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    max_output_tokens=512,
+                ),
+            ))
+
+            for chunk in stream:
+                delta = chunk.text or ""
+                if delta:
+                    answer_text += delta
+                    yield f"event: chunk\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'message': f'답변 생성 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해주세요. ({str(e)})'}, ensure_ascii=False)}\n\n"
+            return
+
+        # 통계치 가공 (스트리밍 응답은 usage_metadata를 매 청크가 아닌 합산으로 제공하지 않는 SDK 버전이 있어
+        # 텍스트 길이 기반으로 근사치를 사용한다 - 화면 표시용 참고치이므로 과금 정산 용도로는 별도 확인 필요)
+        input_token = len(req.question)
+        output_token = len(answer_text)
+        total_token = input_token + output_token
+        response_time_ms = int((time.time() - start_time) * 1000)
+
+        if background_tasks is not None:
+            background_tasks.add_task(
+                cls.save_chat_log_and_stats,
+                supabase, company_code, req, answer_text, input_token, output_token, total_token, response_time_ms
+            )
+        else:
+            cls.save_chat_log_and_stats(supabase, company_code, req, answer_text, input_token, output_token, total_token, response_time_ms)
+
+        done_payload = {
+            "references": ctx["references"],
+            "board_link": ctx["board_link"],
+            "inquiry_link": ctx["inquiry_link"],
+            "input_token": input_token,
+            "output_token": output_token,
+            "total_token": total_token,
+            "response_time_ms": response_time_ms,
+        }
+        yield f"event: done\ndata: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
