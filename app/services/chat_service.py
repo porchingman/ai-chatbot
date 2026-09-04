@@ -220,7 +220,7 @@ class ChatService:
                 contents=ctx["contents_payload"],
                 config=types.GenerateContentConfig(
                     system_instruction=ctx["final_system_instruction"],
-                    thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL)
+                    thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL),
                     max_output_tokens=512,   # [변경-속도개선] 간결한 사례 중심 답변에 맞춰 상한선 축소 (5~7문장 목표)
                 ),
             ))
@@ -284,7 +284,7 @@ class ChatService:
                 contents=ctx["contents_payload"],
                 config=types.GenerateContentConfig(
                     system_instruction=ctx["final_system_instruction"],
-                    thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL)
+                    thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL),
                     max_output_tokens=512,
                 ),
             ))
