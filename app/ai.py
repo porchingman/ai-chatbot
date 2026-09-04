@@ -15,7 +15,7 @@ ai_client = genai.Client(
 
 # 상용 서비스 고정 표준 모델명 정의 (v1beta 규격 일치 완벽 패치)
 EMBEDDING_MODEL = "gemini-embedding-001"  
-CHAT_MODEL = "gemini-2.5-flash"          # 앞의 models/ 접두사를 완전히 제거하여 404 차단
+CHAT_MODEL = "gemini-3.6-flash"          # 앞의 models/ 접두사를 완전히 제거하여 404 차단
 
 # 일시적으로 재시도하면 해결될 가능성이 높은 HTTP 상태코드
 # 503 UNAVAILABLE(과부하), 429 RESOURCE_EXHAUSTED(rate limit), 500 INTERNAL 등
